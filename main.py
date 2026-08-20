@@ -1,16 +1,16 @@
 import argparse
 import csv
 import json
+import os
+import platform
 import re
 import sys
 from datetime import datetime
 from pathlib import Path
-import os
-import platform
 
 from playwright.sync_api import (
     sync_playwright,
-    TimeoutError as PlaywrightTimeoutError
+    TimeoutError as PlaywrightTimeoutError,
 )
 
 
@@ -29,10 +29,8 @@ AVAILABILITY_XPATH = '//*[@id="book"]'
 
 PER_ROOM_NIGHT_SELECTOR = "#pnl_avg_blk"
 
-# Individual offer card
 ROOM_CARD_SELECTOR = "div.card-list.otartrow"
 
-# Price inside each card
 PRICE_SELECTOR = "#rmamt_avg_night"
 
 
@@ -45,14 +43,22 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 JSON_FILE = OUTPUT_DIR / "rooms.json"
 CSV_FILE = OUTPUT_DIR / "rooms.csv"
+TEXT_FILE = OUTPUT_DIR / "room_availability.txt"
 
-SCREENSHOT_BEFORE = (
-    OUTPUT_DIR / "before_availability.png"
-)
 
-SCREENSHOT_AFTER = (
-    OUTPUT_DIR / "per_room_per_night.png"
-)
+# ============================================================
+# SETTINGS
+# ============================================================
+
+# Maximum scroll attempts.
+# Previous version used 60.
+MAX_SCROLLS = 18
+
+# Small wait after each lazy-load scroll.
+SCROLL_WAIT_MS = 350
+
+# Maximum time waiting for first room.
+RESULT_TIMEOUT_MS = 60000
 
 
 # ============================================================
@@ -60,7 +66,6 @@ SCREENSHOT_AFTER = (
 # ============================================================
 
 def clean_text(text):
-
     if not text:
         return ""
 
@@ -79,37 +84,29 @@ def validate_dates(
     check_in,
     check_out
 ):
-
     try:
-
         check_in_date = datetime.strptime(
             check_in,
             "%d-%m-%Y"
         )
-
     except ValueError:
-
         raise ValueError(
             "Invalid check-in date. "
             "Use DD-MM-YYYY."
         )
 
     try:
-
         check_out_date = datetime.strptime(
             check_out,
             "%d-%m-%Y"
         )
-
     except ValueError:
-
         raise ValueError(
             "Invalid check-out date. "
             "Use DD-MM-YYYY."
         )
 
     if check_out_date <= check_in_date:
-
         raise ValueError(
             "Check-out must be after check-in."
         )
@@ -121,7 +118,7 @@ def validate_dates(
 
 
 # ============================================================
-# DATE PICKER
+# CALENDAR
 # ============================================================
 
 def wait_for_calendar(page):
@@ -130,43 +127,38 @@ def wait_for_calendar(page):
         "#ui-datepicker-div",
         ".ui-datepicker",
         ".ui-datepicker-calendar",
-        "[class*='datepicker']"
+        "[class*='datepicker']",
     ]
 
-    for _ in range(20):
+    for _ in range(15):
 
         for selector in selectors:
 
             try:
-
                 calendars = page.locator(
                     selector
                 )
 
-                for i in range(
-                    calendars.count()
-                ):
+                count = calendars.count()
+
+                for i in range(count):
 
                     calendar = calendars.nth(i)
 
                     if calendar.is_visible():
-
                         return calendar
 
             except Exception:
-
                 continue
 
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(200)
 
     raise RuntimeError(
         "Date calendar was not found."
     )
 
 
-def get_calendar_month_year(
-    calendar
-):
+def get_calendar_month_year(calendar):
 
     month_name = None
     year = None
@@ -184,7 +176,6 @@ def get_calendar_month_year(
             )
 
     except Exception:
-
         pass
 
     try:
@@ -200,13 +191,9 @@ def get_calendar_month_year(
             )
 
             if year_text.isdigit():
-
-                year = int(
-                    year_text
-                )
+                year = int(year_text)
 
     except Exception:
-
         pass
 
     return (
@@ -215,9 +202,7 @@ def get_calendar_month_year(
     )
 
 
-def get_calendar_current_date(
-    calendar
-):
+def get_calendar_current_date(calendar):
 
     month_name, year = (
         get_calendar_month_year(
@@ -237,7 +222,7 @@ def get_calendar_current_date(
         "September",
         "October",
         "November",
-        "December"
+        "December",
     ]
 
     if (
@@ -274,14 +259,14 @@ def click_calendar_navigation(
 
         selectors = [
             ".ui-datepicker-next",
-            "a.ui-datepicker-next"
+            "a.ui-datepicker-next",
         ]
 
     else:
 
         selectors = [
             ".ui-datepicker-prev",
-            "a.ui-datepicker-prev"
+            "a.ui-datepicker-prev",
         ]
 
     for selector in selectors:
@@ -309,7 +294,6 @@ def click_calendar_navigation(
                 return True
 
         except Exception:
-
             continue
 
     return False
@@ -332,8 +316,7 @@ def navigate_calendar(
 
     difference = (
         (target_year - current_year) * 12
-        +
-        (target_month - current_month)
+        + (target_month - current_month)
     )
 
     print(
@@ -352,7 +335,6 @@ def navigate_calendar(
     )
 
     if difference == 0:
-
         return
 
     direction = (
@@ -369,19 +351,18 @@ def navigate_calendar(
             page
         )
 
-        clicked = click_calendar_navigation(
+        if not click_calendar_navigation(
             calendar,
             direction
-        )
-
-        if not clicked:
+        ):
 
             raise RuntimeError(
                 f"Could not click "
                 f"calendar {direction}."
             )
 
-        page.wait_for_timeout(400)
+        # Faster than the old 400 ms.
+        page.wait_for_timeout(250)
 
 
 def click_calendar_day(
@@ -411,7 +392,6 @@ def click_calendar_day(
             link = links.nth(i)
 
             if not link.is_visible():
-
                 continue
 
             text = clean_text(
@@ -419,7 +399,6 @@ def click_calendar_day(
             )
 
             if text != target_day:
-
                 continue
 
             classes = (
@@ -429,18 +408,16 @@ def click_calendar_day(
                 or ""
             )
 
+            # Ignore days from adjacent month.
             if (
                 "ui-priority-secondary"
                 in classes
             ):
-
                 continue
 
             link.click()
 
-            page.wait_for_timeout(
-                700
-            )
+            page.wait_for_timeout(350)
 
             print(
                 f"✓ Selected "
@@ -450,7 +427,6 @@ def click_calendar_day(
             return
 
         except Exception:
-
             continue
 
     raise RuntimeError(
@@ -468,11 +444,9 @@ def select_date(
 
     print("\n")
     print("=" * 70)
-
     print(
         f"SELECTING {field_name}"
     )
-
     print("=" * 70)
 
     date_input = page.locator(
@@ -488,9 +462,7 @@ def select_date(
 
     date_input.click()
 
-    page.wait_for_timeout(
-        700
-    )
+    page.wait_for_timeout(350)
 
     calendar = wait_for_calendar(
         page
@@ -512,9 +484,7 @@ def select_date(
         target_date
     )
 
-    page.wait_for_timeout(
-        500
-    )
+    page.wait_for_timeout(250)
 
     actual_value = (
         date_input.input_value()
@@ -601,9 +571,7 @@ def enter_dates(
 # CHECK AVAILABILITY
 # ============================================================
 
-def click_check_availability(
-    page
-):
+def click_check_availability(page):
 
     print("\n")
     print("=" * 70)
@@ -621,10 +589,6 @@ def click_check_availability(
 
     button.scroll_into_view_if_needed()
 
-    page.wait_for_timeout(
-        500
-    )
-
     button.click()
 
     print(
@@ -633,12 +597,16 @@ def click_check_availability(
 
 
 # ============================================================
-# WAIT FOR ROOM RESULTS
+# WAIT FOR RESULTS
+#
+# IMPORTANT:
+# Do NOT wait for networkidle.
+#
+# Hotel websites often keep network requests
+# open for analytics / advertisements.
 # ============================================================
 
-def wait_for_results(
-    page
-):
+def wait_for_results(page):
 
     print("\n")
     print("=" * 70)
@@ -647,36 +615,19 @@ def wait_for_results(
 
     try:
 
-        page.wait_for_load_state(
-            "domcontentloaded",
-            timeout=30000
+        page.locator(
+            ROOM_CARD_SELECTOR
+        ).first.wait_for(
+            state="visible",
+            timeout=RESULT_TIMEOUT_MS
         )
 
     except PlaywrightTimeoutError:
 
-        pass
-
-    try:
-
-        page.wait_for_load_state(
-            "networkidle",
-            timeout=30000
+        raise RuntimeError(
+            "Room results did not load "
+            "within the timeout."
         )
-
-    except PlaywrightTimeoutError:
-
-        pass
-
-    page.locator(
-        ROOM_CARD_SELECTOR
-    ).first.wait_for(
-        state="visible",
-        timeout=60000
-    )
-
-    page.wait_for_timeout(
-        2000
-    )
 
     print(
         "✓ Room results loaded."
@@ -687,9 +638,7 @@ def wait_for_results(
 # PER ROOM PER NIGHT
 # ============================================================
 
-def click_per_room_per_night(
-    page
-):
+def click_per_room_per_night(page):
 
     print("\n")
     print("=" * 70)
@@ -707,19 +656,28 @@ def click_per_room_per_night(
 
     button.scroll_into_view_if_needed()
 
-    page.wait_for_timeout(
-        1000
-    )
-
     print(
         "Clicking #pnl_avg_blk ..."
     )
 
     button.click()
 
-    page.wait_for_timeout(
-        2000
-    )
+    # Wait only until price is available.
+    try:
+
+        page.locator(
+            ROOM_CARD_SELECTOR
+        ).first.locator(
+            PRICE_SELECTOR
+        ).wait_for(
+            state="visible",
+            timeout=10000
+        )
+
+    except PlaywrightTimeoutError:
+
+        # Some pages update prices slightly later.
+        page.wait_for_timeout(700)
 
     print(
         "✓ Per Room Per Night selected."
@@ -727,89 +685,79 @@ def click_per_room_per_night(
 
 
 # ============================================================
-# LOAD ALL CARDS
+# FAST LAZY-LOAD
+#
+# Previous:
+#   60 scrolls
+#   800 ms each
+#
+# New:
+#   max 18 scrolls
+#   350 ms each
+#   stop as soon as card count stabilizes
 # ============================================================
 
-def load_all_rooms(
-    page
-):
+def load_all_rooms(page):
 
     print("\n")
     print("=" * 70)
     print("LOADING ALL ROOM CARDS")
     print("=" * 70)
 
-    previous_height = 0
-    stable_rounds = 0
+    previous_count = 0
+    stable_count_rounds = 0
 
     for scroll_number in range(
-        60
+        MAX_SCROLLS
     ):
 
-        card_count = page.locator(
+        cards = page.locator(
             ROOM_CARD_SELECTOR
-        ).count()
+        )
+
+        current_count = cards.count()
 
         print(
             f"Scroll "
             f"{scroll_number + 1:02d} | "
-            f"Cards: {card_count}"
+            f"Cards: {current_count}"
         )
 
+        # Scroll directly to the bottom.
         page.evaluate(
             """
             () => {
-                window.scrollBy(
+                window.scrollTo(
                     0,
-                    Math.floor(
-                        window.innerHeight * 0.85
-                    )
+                    document.documentElement.scrollHeight
                 );
             }
             """
         )
 
         page.wait_for_timeout(
-            800
+            SCROLL_WAIT_MS
         )
 
-        current_height = page.evaluate(
-            """
-            () =>
-                document.documentElement.scrollHeight
-            """
-        )
+        new_count = page.locator(
+            ROOM_CARD_SELECTOR
+        ).count()
 
-        if current_height == previous_height:
+        if new_count == previous_count:
 
-            stable_rounds += 1
+            stable_count_rounds += 1
 
         else:
 
-            stable_rounds = 0
+            stable_count_rounds = 0
 
-        previous_height = current_height
+        previous_count = new_count
 
-        at_bottom = page.evaluate(
-            """
-            () => (
-                window.innerHeight +
-                window.scrollY >=
-                document.documentElement.scrollHeight - 30
-            )
-            """
-        )
-
-        if (
-            at_bottom
-            and stable_rounds >= 2
-        ):
+        # Once card count stops changing for
+        # two bottom-of-page checks, stop.
+        if stable_count_rounds >= 2:
 
             break
-
-    page.wait_for_timeout(
-        1000
-    )
 
     total = page.locator(
         ROOM_CARD_SELECTOR
@@ -824,12 +772,10 @@ def load_all_rooms(
 
 
 # ============================================================
-# GET CARD NAME
+# CARD NAME
 # ============================================================
 
-def get_card_name(
-    card
-):
+def get_card_name(card):
 
     try:
 
@@ -838,7 +784,6 @@ def get_card_name(
         ).first
 
         if heading.count() == 0:
-
             return ""
 
         return clean_text(
@@ -851,12 +796,10 @@ def get_card_name(
 
 
 # ============================================================
-# GET CARD PRICE
+# CARD PRICE
 # ============================================================
 
-def get_card_price(
-    card
-):
+def get_card_price(card):
 
     try:
 
@@ -865,11 +808,6 @@ def get_card_price(
         ).first
 
         if price_element.count() == 0:
-
-            return ""
-
-        if not price_element.is_visible():
-
             return ""
 
         return clean_text(
@@ -885,12 +823,9 @@ def get_card_price(
 # CONVERT PRICE
 # ============================================================
 
-def convert_price(
-    price_text
-):
+def convert_price(price_text):
 
     if not price_text:
-
         return None
 
     cleaned = (
@@ -906,7 +841,6 @@ def convert_price(
     )
 
     if not cleaned:
-
         return None
 
     try:
@@ -920,17 +854,15 @@ def convert_price(
         return None
 
     if value <= 0:
-
         return None
 
-    # Round DOWN to the nearest 100.
+    # Round DOWN to nearest 100.
     #
-    # 7680  -> 7600
-    # 9220  -> 9200
-    # 11530 -> 11500
-    # 12300 -> 12300
-    # 15370 -> 15300
-    # 33050 -> 33000
+    # 7687.50 -> 7600
+    # 9225.00 -> 9200
+    # 11530   -> 11500
+    # 12300   -> 12300
+    # 15370   -> 15300
 
     return (
         int(value) // 100
@@ -938,269 +870,239 @@ def convert_price(
 
 
 # ============================================================
-# FIND ROOM SECTIONS
+# ROOM TYPE DETECTION
+#
+# This replaces the expensive ancestor-searching logic.
+#
+# We use room TYPE only.
+# We do NOT use "Limited Time Deal", "Early Bird", etc.
 # ============================================================
 
-def find_room_sections(
-    page
-):
-    """
-    Find containers containing the offer cards
-    for each physical room.
+ROOM_TYPE_ORDER = [
+    "camper",
+    "glamper",
+    "surveyor_suite",
+    "surveyor",
+    "zenith",
+    "twin_luxury",
+    "villa",
+]
 
-    The scraper does NOT use offer names to decide
-    which card is first.
 
-    Each detected section is processed separately.
-    """
+def detect_room_type(name):
+
+    name_lower = name.lower()
+
+    # IMPORTANT:
+    # Surveyor Suite must be checked BEFORE Surveyor.
+
+    if "surveyor suite" in name_lower:
+        return "surveyor_suite"
+
+    if "surveyor" in name_lower:
+        return "surveyor"
+
+    if "camper" in name_lower:
+        return "camper"
+
+    if "glamper" in name_lower:
+        return "glamper"
+
+    if "zenith" in name_lower:
+        return "zenith"
+
+    if "twin luxury" in name_lower:
+        return "twin_luxury"
+
+    if "villa" in name_lower:
+        return "villa"
+
+    return None
+
+
+# ============================================================
+# SCRAPE FIRST CARD PER ROOM TYPE
+#
+# Example:
+#
+# Camper:
+#   Card 1 -> TAKE
+#   Card 2 -> IGNORE
+#
+# Glamper:
+#   Card 1 -> TAKE
+#   Card 2 -> IGNORE
+#
+# Surveyor:
+#   Card 1 -> TAKE
+#   Card 2 -> IGNORE
+#
+# etc.
+# ============================================================
+
+def scrape_rooms(page):
+
+    print("\n")
+    print("=" * 70)
+    print(
+        "SCRAPING FIRST CARD "
+        "OF EVERY ROOM TYPE"
+    )
+    print("=" * 70)
+
+    load_all_rooms(page)
 
     cards = page.locator(
         ROOM_CARD_SELECTOR
     )
 
-    total = cards.count()
-
-    sections = []
-    seen = set()
-
-    for i in range(total):
-
-        try:
-
-            card = cards.nth(i)
-
-            ancestors = card.locator(
-                "xpath=ancestor::*"
-            )
-
-            candidates = []
-
-            for j in range(
-                ancestors.count()
-            ):
-
-                ancestor = ancestors.nth(j)
-
-                try:
-
-                    inside_cards = ancestor.locator(
-                        ROOM_CARD_SELECTOR
-                    )
-
-                    count = inside_cards.count()
-
-                    # A room section normally has
-                    # multiple offer cards.
-                    #
-                    # Do not accept a container holding
-                    # all 28 cards.
-                    if (
-                        2 <= count <= 6
-                    ):
-
-                        candidates.append(
-                            ancestor
-                        )
-
-                except Exception:
-
-                    continue
-
-            if not candidates:
-
-                continue
-
-            # Smallest suitable container
-            section = candidates[0]
-
-            try:
-
-                key = section.evaluate(
-                    """
-                    (element) => {
-
-                        if (!element.dataset.roomScraperId) {
-
-                            element.dataset.roomScraperId =
-                                "room_" +
-                                Math.random()
-                                    .toString(36)
-                                    .substring(2, 12);
-                        }
-
-                        return element.dataset.roomScraperId;
-                    }
-                    """
-                )
-
-            except Exception:
-
-                key = str(
-                    id(section)
-                )
-
-            if key in seen:
-
-                continue
-
-            seen.add(key)
-
-            sections.append(
-                section
-            )
-
-        except Exception:
-
-            continue
-
-    return sections
-
-
-# ============================================================
-# SCRAPE FIRST CARD OF EVERY ROOM
-# ============================================================
-
-def scrape_rooms(
-    page
-):
-
-    print("\n")
-    print("=" * 70)
-    print(
-        "SCRAPING FIRST CARD OF EVERY ROOM"
-    )
-    print("=" * 70)
-
-    load_all_rooms(
-        page
-    )
-
-    sections = find_room_sections(
-        page
-    )
+    total_cards = cards.count()
 
     print(
-        f"\nRoom sections detected: "
-        f"{len(sections)}"
+        f"\nCards available: "
+        f"{total_cards}"
     )
 
-    rooms = []
+    # --------------------------------------------------------
+    # Keep ONLY the first card encountered
+    # for each room type.
+    # --------------------------------------------------------
 
-    for section_index, section in enumerate(
-        sections,
-        start=1
+    first_cards = {}
+
+    for index in range(
+        total_cards
     ):
 
         try:
 
-            cards = section.locator(
-                ROOM_CARD_SELECTOR
-            )
-
-            card_count = cards.count()
-
-            if card_count == 0:
-
-                continue
-
-            print("\n")
-            print("=" * 70)
-
-            print(
-                f"ROOM SECTION #{section_index}"
-            )
-
-            print(
-                f"Cards in section: "
-                f"{card_count}"
-            )
-
-            # =================================================
-            # VERY IMPORTANT
-            #
-            # ONLY FIRST CARD.
-            #
-            # We DO NOT search card 2/3/4.
-            # =================================================
-
-            first_card = cards.first
+            card = cards.nth(index)
 
             name = get_card_name(
-                first_card
+                card
             )
-
-            website_price = get_card_price(
-                first_card
-            )
-
-            price = convert_price(
-                website_price
-            )
-
-            print(
-                "Selected: FIRST CARD ONLY"
-            )
-
-            print(
-                f"Name: {name}"
-            )
-
-            print(
-                f"Website price: "
-                f"{website_price}"
-            )
-
-            # ------------------------------------------------
-            # If first card unavailable:
-            # skip the room entirely.
-            # ------------------------------------------------
 
             if not name:
-
-                print(
-                    "SKIPPED - no room name."
-                )
-
                 continue
 
-            if price is None:
+            room_type = detect_room_type(
+                name
+            )
 
-                print(
-                    "SKIPPED - first card "
-                    "has no valid price."
-                )
-
+            if not room_type:
                 continue
 
-            # ------------------------------------------------
-            # ONLY name + price
-            # ------------------------------------------------
+            # Already found the first card
+            # for this room type.
+            if room_type in first_cards:
+                continue
 
-            rooms.append(
-                {
-                    "name": name,
-                    "price": price
-                }
-            )
+            first_cards[
+                room_type
+            ] = card
+
+        except Exception:
+            continue
+
+    print(
+        f"Room types found: "
+        f"{len(first_cards)}"
+    )
+
+    rooms = []
+
+    # --------------------------------------------------------
+    # Process in fixed room order.
+    # --------------------------------------------------------
+
+    for room_type in ROOM_TYPE_ORDER:
+
+        if room_type not in first_cards:
 
             print(
-                f"Stored price: {price}"
+                f"\n{room_type}: "
+                f"NOT AVAILABLE"
             )
 
-            print("=" * 70)
+            continue
 
-        except Exception as error:
+        card = first_cards[
+            room_type
+        ]
+
+        name = get_card_name(
+            card
+        )
+
+        website_price = get_card_price(
+            card
+        )
+
+        price = convert_price(
+            website_price
+        )
+
+        print("\n")
+        print("=" * 70)
+
+        print(
+            f"ROOM TYPE: "
+            f"{room_type}"
+        )
+
+        print(
+            "SELECTED: FIRST CARD ONLY"
+        )
+
+        print(
+            f"Name: {name}"
+        )
+
+        print(
+            f"Website price: "
+            f"{website_price}"
+        )
+
+        # ----------------------------------------------------
+        # No price = unavailable.
+        # Do NOT store null.
+        # ----------------------------------------------------
+
+        if price is None:
 
             print(
-                f"Error processing "
-                f"section #{section_index}: "
-                f"{error}"
+                "SKIPPED - no valid price."
             )
+
+            continue
+
+        rooms.append(
+            {
+                "name": name,
+                "price": price,
+            }
+        )
+
+        print(
+            f"Stored price: "
+            f"{price}"
+        )
+
+        print("=" * 70)
+
+    # --------------------------------------------------------
+    # FINAL RESULT
+    # --------------------------------------------------------
 
     print("\n")
     print("=" * 70)
     print("FINAL ROOM RESULT")
     print("=" * 70)
+
+    print(
+        f"Total cards found: "
+        f"{total_cards}"
+    )
 
     print(
         f"Rooms stored: "
@@ -1225,18 +1127,10 @@ def scrape_rooms(
 
 
 # ============================================================
-# FORMAT FINAL ROOM AVAILABILITY
+# FORMAT ROOM AVAILABILITY
 # ============================================================
 
-def format_room_availability(
-    data
-):
-    """
-    Convert scraped JSON into the required
-    natural-language room availability response.
-
-    Villa price is multiplied by 2.
-    """
+def format_room_availability(data):
 
     rooms = data.get(
         "rooms",
@@ -1256,77 +1150,34 @@ def format_room_availability(
             "price"
         )
 
-        # Never process invalid records
         if not name:
             continue
 
         if price is None:
             continue
 
-        name_lower = name.lower()
+        room_type = detect_room_type(
+            name
+        )
 
-        # IMPORTANT:
-        # Check specific room names first.
-
-        if "surveyor suite" in name_lower:
-
-            room_prices[
-                "surveyor_suite"
-            ] = price
-
-        elif "surveyor" in name_lower:
+        if room_type:
 
             room_prices[
-                "surveyor"
+                room_type
             ] = price
-
-        elif "camper" in name_lower:
-
-            room_prices[
-                "camper"
-            ] = price
-
-        elif "glamper" in name_lower:
-
-            room_prices[
-                "glamper"
-            ] = price
-
-        elif "zenith" in name_lower:
-
-            room_prices[
-                "zenith"
-            ] = price
-
-        elif "twin luxury" in name_lower:
-
-            room_prices[
-                "twin_luxury"
-            ] = price
-
-        elif "villa" in name_lower:
-
-            room_prices[
-                "villa"
-            ] = price
-
-    # --------------------------------------------------------
-    # Format numbers
-    # --------------------------------------------------------
 
     def money(value):
-
         return f"{value:,}"
 
-    # --------------------------------------------------------
-    # Build response
-    # --------------------------------------------------------
-
     lines = [
-        "For , Here is the Room availability with prices below:"
+        "For , Here is the Room availability "
+        "with prices below:"
     ]
 
+    # --------------------------------------------------------
     # Camper
+    # --------------------------------------------------------
+
     if "camper" in room_prices:
 
         lines.append(
@@ -1336,7 +1187,10 @@ def format_room_availability(
             "plus taxes per night."
         )
 
+    # --------------------------------------------------------
     # Glamper
+    # --------------------------------------------------------
+
     if "glamper" in room_prices:
 
         lines.append(
@@ -1347,7 +1201,10 @@ def format_room_availability(
             "(We have 4 Glamper rooms)"
         )
 
+    # --------------------------------------------------------
     # Surveyor
+    # --------------------------------------------------------
+
     if "surveyor" in room_prices:
 
         lines.append(
@@ -1357,43 +1214,53 @@ def format_room_availability(
             "plus taxes per night."
         )
 
+    # --------------------------------------------------------
     # Surveyor Suite
+    # --------------------------------------------------------
+
     if "surveyor_suite" in room_prices:
 
         lines.append(
-            "The Surveyor suite room (2 occupants) "
-            "is available for "
+            "The Surveyor suite room "
+            "(2 occupants) is available for "
             f"Rs. {money(room_prices['surveyor_suite'])} "
             "plus taxes per night."
         )
 
+    # --------------------------------------------------------
     # Zenith
+    # --------------------------------------------------------
+
     if "zenith" in room_prices:
 
         lines.append(
-            "The Zenith luxury cottage (2 occupants) "
-            "is available for "
+            "The Zenith luxury cottage "
+            "(2 occupants) is available for "
             f"Rs. {money(room_prices['zenith'])} "
             "plus taxes per night."
         )
 
+    # --------------------------------------------------------
     # Twin Luxury
+    # --------------------------------------------------------
+
     if "twin_luxury" in room_prices:
 
         lines.append(
             "The twin luxury cottage "
-            "(2 occupants / Room) "
-            "is available for "
-            f"Rs. {money(room_prices['twin_luxury'])} "
+            "(2 occupants / Room) is available "
+            f"for Rs. {money(room_prices['twin_luxury'])} "
             "plus taxes per night. "
             "(2 Rooms next to each other)"
         )
 
+    # --------------------------------------------------------
     # Villa
+    # --------------------------------------------------------
+
     if "villa" in room_prices:
 
-        # IMPORTANT:
-        # Villa price = scraped price × 2
+        # Villa price = room price × 2.
 
         villa_price = (
             room_prices["villa"] * 2
@@ -1425,7 +1292,7 @@ def save_json(
     output = {
         "check_in": check_in,
         "check_out": check_out,
-        "rooms": rooms
+        "rooms": rooms,
     }
 
     with open(
@@ -1442,7 +1309,7 @@ def save_json(
         )
 
     print(
-        f"\n✓ JSON saved: "
+        f"✓ JSON saved: "
         f"{JSON_FILE}"
     )
 
@@ -1451,9 +1318,7 @@ def save_json(
 # SAVE CSV
 # ============================================================
 
-def save_csv(
-    rooms
-):
+def save_csv(rooms):
 
     with open(
         CSV_FILE,
@@ -1466,7 +1331,7 @@ def save_csv(
             file,
             fieldnames=[
                 "name",
-                "price"
+                "price",
             ]
         )
 
@@ -1485,17 +1350,134 @@ def save_csv(
 
 
 # ============================================================
+# SAVE TEXT
+# ============================================================
+
+def save_text(text):
+
+    with open(
+        TEXT_FILE,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        file.write(text)
+
+    print(
+        f"✓ Availability text saved: "
+        f"{TEXT_FILE}"
+    )
+
+
+# ============================================================
+# BROWSER LAUNCH
+#
+# Windows:
+#   Uses Playwright Chromium.
+#
+# Streamlit Cloud / Linux:
+#   Uses /usr/bin/chromium.
+# ============================================================
+
+def launch_browser(playwright):
+
+    system_name = platform.system()
+
+    print(
+        f"Operating system: "
+        f"{system_name}"
+    )
+
+    if system_name == "Windows":
+
+        print(
+            "Browser mode: "
+            "Windows Chromium"
+        )
+
+        return playwright.chromium.launch(
+            headless=False
+        )
+
+    # --------------------------------------------------------
+    # Linux / Streamlit Cloud
+    # --------------------------------------------------------
+
+    chromium_paths = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ]
+
+    chromium_path = None
+
+    for path in chromium_paths:
+
+        if os.path.exists(path):
+
+            chromium_path = path
+            break
+
+    if chromium_path:
+
+        print(
+            f"Browser mode: "
+            f"Headless Chromium "
+            f"({chromium_path})"
+        )
+
+        return playwright.chromium.launch(
+            executable_path=chromium_path,
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+            ],
+        )
+
+    # Fallback.
+    print(
+        "Browser mode: "
+        "Playwright bundled Chromium"
+    )
+
+    return playwright.chromium.launch(
+        headless=True,
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ],
+    )
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
 def main():
-    # Keep console output UTF-8 on Windows.
+
+    # --------------------------------------------------------
+    # UTF-8 console
+    # --------------------------------------------------------
+
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
+
+        sys.stdout.reconfigure(
+            encoding="utf-8"
+        )
+
+        sys.stderr.reconfigure(
+            encoding="utf-8"
+        )
+
     except Exception:
         pass
 
+    # --------------------------------------------------------
+    # Arguments
+    # --------------------------------------------------------
 
     parser = argparse.ArgumentParser(
         description=(
@@ -1536,37 +1518,32 @@ def main():
 
     print("\n")
     print("=" * 70)
-
-    print(
-        "EVEREST BASE CAMP"
-    )
-
-    print(
-        "ROOM PRICE SCRAPER"
-    )
-
+    print("EVEREST BASE CAMP")
+    print("ROOM PRICE SCRAPER")
     print("=" * 70)
 
     print(
-        f"\nCheck-in : {check_in}"
+        f"\nCheck-in : "
+        f"{check_in}"
     )
 
     print(
-        f"Check-out: {check_out}"
+        f"Check-out: "
+        f"{check_out}"
     )
 
     print("\nRULE:")
 
     print(
-        "Camper       -> FIRST CARD"
+        "Camper        -> FIRST CARD"
     )
 
     print(
-        "Glamper      -> FIRST CARD"
+        "Glamper       -> FIRST CARD"
     )
 
     print(
-        "Surveyor     -> FIRST CARD"
+        "Surveyor      -> FIRST CARD"
     )
 
     print(
@@ -1574,15 +1551,15 @@ def main():
     )
 
     print(
-        "Zenith       -> FIRST CARD"
+        "Zenith        -> FIRST CARD"
     )
 
     print(
-        "Twin Luxury  -> FIRST CARD"
+        "Twin Luxury   -> FIRST CARD"
     )
 
     print(
-        "Villa        -> FIRST CARD"
+        "Villa         -> FIRST CARD"
     )
 
     print(
@@ -1599,217 +1576,203 @@ def main():
 
     with sync_playwright() as playwright:
 
-        # ============================================================
-        # LAUNCH BROWSER
-        # Works on both Windows localhost and Streamlit Cloud Linux
-        # ============================================================
+        browser = None
+        context = None
 
-        system_name = platform.system()
+        try:
 
-        if system_name == "Windows":
+            # ------------------------------------------------
+            # Launch
+            # ------------------------------------------------
 
-            print("Running on Windows")
-
-            browser = playwright.chromium.launch(
-                headless=False
+            browser = launch_browser(
+                playwright
             )
 
-        else:
+            # ------------------------------------------------
+            # Context
+            # ------------------------------------------------
 
-            print("Running on Linux / Streamlit Cloud")
-
-            chromium_path = "/usr/bin/chromium"
-
-            browser = playwright.chromium.launch(
-                executable_path=chromium_path,
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                ],
+            context = browser.new_context(
+                viewport={
+                    "width": 1440,
+                    "height": 900,
+                },
+                locale="en-IN",
             )
 
-        context = browser.new_context(
-            viewport={
-                "width": 1440,
-                "height": 900
-            },
-            locale="en-IN"
-        )
+            page = context.new_page()
 
-        page = context.new_page()
-
-        # ====================================================
-        # OPEN WEBSITE
-        # ====================================================
-
-        print(
-            "\nOpening website..."
-        )
-
-        page.goto(
-            URL,
-            wait_until="domcontentloaded",
-            timeout=60000
-        )
-
-        print(
-            "✓ Website opened."
-        )
-
-        page.wait_for_timeout(
-            5000
-        )
-
-        # ====================================================
-        # SELECT DATES
-        # ====================================================
-
-        enter_dates(
-            page,
-            check_in,
-            check_out
-        )
-
-        page.screenshot(
-            path=str(
-                SCREENSHOT_BEFORE
-            ),
-            full_page=True
-        )
-
-        # ====================================================
-        # CHECK AVAILABILITY
-        # ====================================================
-
-        click_check_availability(
-            page
-        )
-
-        # ====================================================
-        # WAIT FOR RESULTS
-        # ====================================================
-
-        wait_for_results(
-            page
-        )
-
-        # ====================================================
-        # PER ROOM PER NIGHT
-        # ====================================================
-
-        click_per_room_per_night(
-            page
-        )
-
-        page.screenshot(
-            path=str(
-                SCREENSHOT_AFTER
-            ),
-            full_page=True
-        )
-
-        # ====================================================
-        # SCRAPE ROOMS
-        # ====================================================
-
-        rooms = scrape_rooms(
-            page
-        )
-
-        # ====================================================
-        # SAVE RAW ROOM DATA
-        # ====================================================
-
-        save_json(
-            rooms,
-            check_in,
-            check_out
-        )
-
-        save_csv(
-            rooms
-        )
-
-        # ====================================================
-        # CREATE FINAL TEXT
-        # ====================================================
-
-        data = {
-            "check_in": check_in,
-            "check_out": check_out,
-            "rooms": rooms
-        }
-
-        availability_text = (
-            format_room_availability(
-                data
+            page.set_default_timeout(
+                15000
             )
-        )
 
-        # ====================================================
-        # PRINT FINAL TEXT
-        # ====================================================
+            page.set_default_navigation_timeout(
+                45000
+            )
 
-        print("\n")
-        print("=" * 70)
-        print(
-            "ROOM AVAILABILITY"
-        )
-        print("=" * 70)
+            # ------------------------------------------------
+            # OPEN WEBSITE
+            # ------------------------------------------------
 
-        print(
-            availability_text
-        )
+            print(
+                "\nOpening website..."
+            )
 
-        print("=" * 70)
+            page.goto(
+                URL,
+                wait_until="domcontentloaded",
+                timeout=45000
+            )
 
-        # ====================================================
-        # SAVE TEXT
-        # ====================================================
+            print(
+                "✓ Website opened."
+            )
 
-        TEXT_FILE = (
-            OUTPUT_DIR /
-            "room_availability.txt"
-        )
+            # ------------------------------------------------
+            # Small initial wait.
+            # ------------------------------------------------
 
-        with open(
-            TEXT_FILE,
-            "w",
-            encoding="utf-8"
-        ) as file:
+            page.wait_for_timeout(
+                1200
+            )
 
-            file.write(
+            # ------------------------------------------------
+            # DATE SELECTION
+            # ------------------------------------------------
+
+            enter_dates(
+                page,
+                check_in,
+                check_out
+            )
+
+            # ------------------------------------------------
+            # CHECK AVAILABILITY
+            # ------------------------------------------------
+
+            click_check_availability(
+                page
+            )
+
+            # ------------------------------------------------
+            # WAIT FOR RESULTS
+            # ------------------------------------------------
+
+            wait_for_results(
+                page
+            )
+
+            # ------------------------------------------------
+            # PER ROOM PER NIGHT
+            # ------------------------------------------------
+
+            click_per_room_per_night(
+                page
+            )
+
+            # ------------------------------------------------
+            # SCRAPE
+            # ------------------------------------------------
+
+            rooms = scrape_rooms(
+                page
+            )
+
+            # ------------------------------------------------
+            # SAVE JSON
+            # ------------------------------------------------
+
+            save_json(
+                rooms,
+                check_in,
+                check_out
+            )
+
+            # ------------------------------------------------
+            # SAVE CSV
+            # ------------------------------------------------
+
+            save_csv(
+                rooms
+            )
+
+            # ------------------------------------------------
+            # FORMAT FINAL MESSAGE
+            # ------------------------------------------------
+
+            data = {
+                "check_in": check_in,
+                "check_out": check_out,
+                "rooms": rooms,
+            }
+
+            availability_text = (
+                format_room_availability(
+                    data
+                )
+            )
+
+            # ------------------------------------------------
+            # SAVE TEXT
+            # ------------------------------------------------
+
+            save_text(
                 availability_text
             )
 
-        print(
-            f"\n✓ Availability text saved: "
-            f"{TEXT_FILE}"
-        )
+            # ------------------------------------------------
+            # PRINT FINAL
+            # ------------------------------------------------
 
-        # ====================================================
-        # COMPLETED
-        # ====================================================
+            print("\n")
+            print("=" * 70)
+            print("ROOM AVAILABILITY")
+            print("=" * 70)
 
-        print("\n")
-        print("=" * 70)
-        print(
-            "SCRAPING COMPLETED"
-        )
-        print("=" * 70)
+            print(
+                availability_text
+            )
 
-        print(
-            f"Total rooms stored: "
-            f"{len(rooms)}"
-        )
+            print("=" * 70)
 
-        browser.close()
+            print("\n")
+            print("=" * 70)
+            print("SCRAPING COMPLETED")
+            print("=" * 70)
 
-        print(
-            "✓ Browser closed."
-        )
+            print(
+                f"Total rooms stored: "
+                f"{len(rooms)}"
+            )
+
+        finally:
+
+            # ------------------------------------------------
+            # IMPORTANT:
+            # No 10-second wait.
+            # Close immediately.
+            # ------------------------------------------------
+
+            try:
+
+                if context:
+                    context.close()
+
+            except Exception:
+                pass
+
+            try:
+
+                if browser:
+                    browser.close()
+
+            except Exception:
+                pass
+
+            print(
+                "\n✓ Browser closed."
+            )
 
 
 # ============================================================
@@ -1817,5 +1780,4 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     main()
