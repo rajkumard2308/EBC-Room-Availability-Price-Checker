@@ -1,8 +1,0 @@
-For , Here is the Room availability with prices below:
-The Camper room (2 occupants) is available for Rs. 8,400 plus taxes per night.
-The Glamper room (2 occupants) is available for Rs. 9,800 plus taxes per night. (We have 4 Glamper rooms)
-The Surveyor room (2 occupants) is available for Rs. 12,000 plus taxes per night.
-The Surveyor suite room (2 occupants) is available for Rs. 12,700 plus taxes per night.
-The Zenith luxury cottage (2 occupants) is available for Rs. 15,500 plus taxes per night.
-The twin luxury cottage (2 occupants / Room) is available for Rs. 31,700 plus taxes per night. (2 Rooms next to each other)
-The Villa (2 occupants/room) is available for Rs. 34,600 plus taxes per night. (2 Rooms villa)
