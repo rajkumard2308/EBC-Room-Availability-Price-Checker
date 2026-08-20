@@ -5,6 +5,8 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+import os
+import platform
 
 from playwright.sync_api import (
     sync_playwright,
@@ -1597,9 +1599,36 @@ def main():
 
     with sync_playwright() as playwright:
 
-        browser = playwright.chromium.launch(
-            headless=False
-        )
+        # ============================================================
+        # LAUNCH BROWSER
+        # Works on both Windows localhost and Streamlit Cloud Linux
+        # ============================================================
+
+        system_name = platform.system()
+
+        if system_name == "Windows":
+
+            print("Running on Windows")
+
+            browser = playwright.chromium.launch(
+                headless=False
+            )
+
+        else:
+
+            print("Running on Linux / Streamlit Cloud")
+
+            chromium_path = "/usr/bin/chromium"
+
+            browser = playwright.chromium.launch(
+                executable_path=chromium_path,
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            )
 
         context = browser.new_context(
             viewport={
@@ -1774,15 +1803,6 @@ def main():
         print(
             f"Total rooms stored: "
             f"{len(rooms)}"
-        )
-
-        print(
-            "\nBrowser will remain open "
-            "for 10 seconds."
-        )
-
-        page.wait_for_timeout(
-            10000
         )
 
         browser.close()
