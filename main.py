@@ -1136,6 +1136,15 @@ def format_room_availability(data):
         "rooms",
         []
     )
+    check_in = data.get(
+        "check_in",
+        ""
+    )
+
+    check_out = data.get(
+        "check_out",
+        ""
+    )
 
     room_prices = {}
 
@@ -1169,8 +1178,41 @@ def format_room_availability(data):
     def money(value):
         return f"{value:,}"
 
+    # --------------------------------------------------------
+    # FORMAT DATE
+    # 23-08-2026 -> 23Aug
+    # 25-08-2026 -> 25Aug
+    # --------------------------------------------------------
+
+    try:
+
+        check_in_date = datetime.strptime(
+            check_in,
+            "%d-%m-%Y"
+        )
+
+        check_out_date = datetime.strptime(
+            check_out,
+            "%d-%m-%Y"
+        )
+
+        date_range = (
+            f"{check_in_date.strftime('%d%b')}-"
+            f"{check_out_date.strftime('%d%b')}"
+        )
+
+    except ValueError:
+
+        date_range = (
+            f"{check_in}-{check_out}"
+        )
+
+    # --------------------------------------------------------
+    # FINAL MESSAGE
+    # --------------------------------------------------------
+
     lines = [
-        "For , Here is the Room availability "
+        f"For {date_range}, Here is the Room availability "
         "with prices below:"
     ]
 
