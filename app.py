@@ -828,21 +828,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown(
-    '<div class="sub-title">'
-    'Room Availability & Price Checker'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    '<div class="description">'
-    'Check live room availability and per-night '
-    'pricing for your selected stay dates.'
-    '</div>',
-    unsafe_allow_html=True,
-)
-
+# st.markdown(
+#     '<div class="sub-title">'
+#     'Room Availability & Price Checker'
+#     '</div>',
+#     unsafe_allow_html=True,
+# )
+#
+# st.markdown(
+#     '<div class="description">'
+#     'Check live room availability and per-night '
+#     'pricing for your selected stay dates.'
+#     '</div>',
+#     unsafe_allow_html=True,
+# )
+#
 st.divider()
 
 
@@ -978,9 +978,7 @@ if check_button:
         f"""
         <div class="date-box">
         <b>Stay dates</b><br><br>
-        Check-in: {check_in}<br><br>
-        →<br><br>
-        Check-out: {check_out}
+        Check-in: {check_in}<br>→<br>Check-out: {check_out}
         </div>
         """,
         unsafe_allow_html=True,
@@ -1021,25 +1019,25 @@ if check_button:
     # ROOM PRICE DETAILS
     # ========================================================
 
-    st.header("Room Price Details")
-
-    for room in rooms:
-
-        name = room.get(
-            "name"
-        )
-
-        price = room.get(
-            "price"
-        )
-
-        if not name or price is None:
-            continue
-
-        st.markdown(
-            f"""
-            **{name}**
-
-            **₹{price:,} per room / night**
-            """,
-        )
+    # st.header("Room Price Details")
+    #
+    # for room in rooms:
+    #
+    #     name = room.get(
+    #         "name"
+    #     )
+    #
+    #     price = room.get(
+    #         "price"
+    #     )
+    #
+    #     if not name or price is None:
+    #         continue
+    #
+    #     st.markdown(
+    #         f"""
+    #         **{name}**
+    #
+    #         **₹{price:,} per room / night**
+    #         """,
+    #     )
