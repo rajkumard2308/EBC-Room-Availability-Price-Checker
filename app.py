@@ -149,21 +149,54 @@ with st.sidebar:
     # --------------------------------------------------------
 
     today = date.today()
-    default_check_in = today + timedelta(days=1)
-    default_check_out = today + timedelta(days=2)
+
+    # --------------------------------------------------------
+    # Initialize session state
+    # --------------------------------------------------------
+
+    if "check_in_date" not in st.session_state:
+        st.session_state.check_in_date = today + timedelta(days=1)
+
+    if "check_out_date" not in st.session_state:
+        st.session_state.check_out_date = (
+                st.session_state.check_in_date + timedelta(days=1)
+        )
+
+
+    # --------------------------------------------------------
+    # Automatically update checkout when check-in changes
+    # --------------------------------------------------------
+
+    def update_checkout_date():
+        st.session_state.check_out_date = (
+                st.session_state.check_in_date + timedelta(days=1)
+        )
+
+
+    # --------------------------------------------------------
+    # Check-in
+    # --------------------------------------------------------
 
     check_in_date = st.date_input(
         "Check-in",
-        value=default_check_in,
         min_value=today,
         format="DD-MM-YYYY",
         key="check_in_date",
+        on_change=update_checkout_date,
     )
+
+    # --------------------------------------------------------
+    # Check-out
+    # --------------------------------------------------------
+
+    check_out_min = check_in_date + timedelta(days=1)
+
+    if st.session_state.check_out_date <= check_in_date:
+        st.session_state.check_out_date = check_out_min
 
     check_out_date = st.date_input(
         "Check-out",
-        value=default_check_out,
-        min_value=today,
+        min_value=check_out_min,
         format="DD-MM-YYYY",
         key="check_out_date",
     )

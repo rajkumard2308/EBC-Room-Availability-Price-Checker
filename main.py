@@ -145,7 +145,7 @@ def format_short_date(date_text):
         "%d-%m-%Y"
     )
 
-    return date_obj.strftime("%d%b")
+    return date_obj.strftime("%d %b")
 
 
 def format_date_range(check_in, check_out):
@@ -156,7 +156,7 @@ def format_date_range(check_in, check_out):
     """
 
     return (
-        f"{format_short_date(check_in)}-"
+        f"{format_short_date(check_in)} - "
         f"{format_short_date(check_out)}"
     )
 
