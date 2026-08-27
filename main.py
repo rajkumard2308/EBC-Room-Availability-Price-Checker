@@ -27,7 +27,7 @@ CHECKIN_XPATH = '//*[@id="eZ_chkin"]'
 CHECKOUT_XPATH = '//*[@id="eZ_chkout"]'
 AVAILABILITY_XPATH = '//*[@id="book"]'
 
-PER_ROOM_NIGHT_SELECTOR = "#pnl_avg_blk"
+PER_ROOM_NIGHT_SELECTOR = '//*[@id="pnl_avg_blk"]'
 
 # Room cards
 ROOM_CARD_SELECTOR = "div.card-list.otartrow"
@@ -44,13 +44,13 @@ PRICE_SELECTOR = "#rmamt_avg_night"
 MAX_SCROLLS = 12
 
 # Small delay after scrolling.
-SCROLL_WAIT_MS = 250
+SCROLL_WAIT_MS = 500
 
 # Maximum wait for room cards.
-RESULT_TIMEOUT_MS = 45000
+RESULT_TIMEOUT_MS = 60000
 
 # Maximum page navigation timeout.
-PAGE_TIMEOUT_MS = 60000
+PAGE_TIMEOUT_MS = 90000
 
 
 # ============================================================
@@ -649,7 +649,7 @@ def wait_for_rooms(page):
         )
 
     # Small stabilization delay.
-    page.wait_for_timeout(700)
+    page.wait_for_timeout(1500)
 
 
 # ============================================================
@@ -671,7 +671,7 @@ def select_per_room_per_night(page):
         timeout=5000
     )
 
-    page.wait_for_timeout(500)
+    page.wait_for_timeout(1000)
 
     # Wait until at least one price exists.
     try:
@@ -688,7 +688,7 @@ def select_per_room_per_night(page):
         # The price may still exist inside
         # cards even if the direct selector
         # isn't immediately visible.
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(2500)
 
 
 # ============================================================
