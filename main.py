@@ -47,7 +47,7 @@ MAX_SCROLLS = 12
 SCROLL_WAIT_MS = 500
 
 # Maximum wait for room cards.
-RESULT_TIMEOUT_MS = 60000
+RESULT_TIMEOUT_MS = 120000
 
 # Maximum page navigation timeout.
 PAGE_TIMEOUT_MS = 90000
@@ -622,34 +622,39 @@ def click_check_availability(page):
 # ============================================================
 
 def wait_for_rooms(page):
+    print("\n" + "=" * 70)
+    print("WAITING FOR ROOM RESULTS")
+    print("=" * 70)
 
-    # DO NOT use networkidle.
-    #
-    # Booking websites often keep making
-    # background requests.
-    #
-    # We only wait for the actual room card.
-
-    cards = page.locator(
-        ROOM_CARD_SELECTOR
-    )
+    cards = page.locator(ROOM_CARD_SELECTOR)
 
     try:
-
+        # Wait for the first actual room card.
         cards.first.wait_for(
             state="visible",
-            timeout=RESULT_TIMEOUT_MS
+            timeout=120000
         )
+
+        print("✓ First room card detected.")
 
     except PlaywrightTimeoutError:
+        # Give the page a final moment and inspect it.
+        page.wait_for_timeout(5000)
 
-        raise RuntimeError(
-            "Room results did not load "
-            "within the allowed time."
-        )
+        count = cards.count()
 
-    # Small stabilization delay.
-    page.wait_for_timeout(1500)
+        if count == 0:
+            raise RuntimeError(
+                "Room results did not load within 120 seconds."
+            )
+
+    # Allow prices and room details to finish rendering.
+    page.wait_for_timeout(3000)
+
+    print(
+        f"✓ Room results loaded. "
+        f"Cards found: {cards.count()}"
+    )
 
 
 # ============================================================
@@ -657,38 +662,37 @@ def wait_for_rooms(page):
 # ============================================================
 
 def select_per_room_per_night(page):
+    print("\n" + "=" * 70)
+    print("SELECTING PER ROOM PER NIGHT")
+    print("=" * 70)
 
-    selector = page.locator(
-        PER_ROOM_NIGHT_SELECTOR
-    )
+    selector = page.locator("#pnl_avg_blk")
 
-    selector.wait_for(
-        state="visible",
-        timeout=15000
-    )
-
-    selector.click(
-        timeout=5000
-    )
-
-    page.wait_for_timeout(1000)
-
-    # Wait until at least one price exists.
     try:
-
-        page.locator(
-            PRICE_SELECTOR
-        ).first.wait_for(
+        selector.wait_for(
             state="visible",
-            timeout=15000
+            timeout=30000
         )
 
-    except PlaywrightTimeoutError:
+        selector.scroll_into_view_if_needed()
 
-        # The price may still exist inside
-        # cards even if the direct selector
-        # isn't immediately visible.
-        page.wait_for_timeout(2500)
+        page.wait_for_timeout(1000)
+
+        selector.click(
+            timeout=10000
+        )
+
+        print("✓ Per Room Per Night clicked.")
+
+    except PlaywrightTimeoutError:
+        raise RuntimeError(
+            "Per Room Per Night option was not available."
+        )
+
+    # Give IPMS247 time to update the displayed prices.
+    page.wait_for_timeout(3000)
+
+    print("✓ Per Room Per Night price update completed.")
 
 
 # ============================================================
@@ -975,80 +979,124 @@ def scrape_rooms(page):
 
     total_cards = cards.count()
 
-    # Store ONLY first card for every room type.
+    # Keep first card for name/price
+    # but inspect ALL cards for rooms-left count.
     first_cards = {}
+    rooms_left_by_type = {}
 
     for index in range(total_cards):
 
         try:
-
             card = cards.nth(index)
 
-            name = get_card_name(
-                card
-            )
+            name = get_card_name(card)
 
             if not name:
                 continue
 
-            room_type = detect_room_type(
-                name
-            )
+            room_type = detect_room_type(name)
 
             if not room_type:
                 continue
 
-            # Already got first card.
-            if room_type in first_cards:
-                continue
+            # Keep first card for this room type
+            if room_type not in first_cards:
+                first_cards[room_type] = card
 
-            first_cards[
-                room_type
-            ] = card
+            # Get actual "Rooms Left"
+            count = get_rooms_left(card)
+
+            if count is not None:
+
+                previous = rooms_left_by_type.get(
+                    room_type
+                )
+
+                if (
+                    previous is None
+                    or count > previous
+                ):
+                    rooms_left_by_type[
+                        room_type
+                    ] = count
 
         except Exception:
             continue
 
     rooms = []
 
-    # Fixed room order.
+    # Fixed room order
     for room_type in ROOM_TYPE_ORDER:
 
         if room_type not in first_cards:
             continue
 
-        card = first_cards[
-            room_type
-        ]
+        card = first_cards[room_type]
 
-        name = get_card_name(
-            card
-        )
+        name = get_card_name(card)
 
-        website_price = get_card_price(
-            card
-        )
+        website_price = get_card_price(card)
 
         price = convert_price(
             website_price
         )
 
-        # Never store null.
+        # Never store null
         if not name:
             continue
 
         if price is None:
             continue
 
-        rooms.append(
-            {
-                "name": name,
-                "price": price,
-            }
-        )
+        room = {
+            "name": name,
+            "price": price,
+        }
+
+        # Add actual rooms-left count
+        if room_type in rooms_left_by_type:
+
+            room["rooms_left"] = (
+                rooms_left_by_type[
+                    room_type
+                ]
+            )
+
+        rooms.append(room)
 
     return rooms
 
+# ============================================================
+# ROOMS LEFT
+# ============================================================
+
+def get_rooms_left(card):
+    """
+    Extract the actual number of rooms left from a room card.
+    """
+
+    try:
+        text = clean_text(card.inner_text())
+
+        patterns = [
+            r"(?:hurry!\s*)?(\d+)\s+rooms?\s+left",
+            r"only\s+(\d+)\s+rooms?\s+left",
+        ]
+
+        for pattern in patterns:
+            match = re.search(
+                pattern,
+                text,
+                flags=re.IGNORECASE
+            )
+
+            if match:
+                return int(match.group(1))
+
+    except Exception:
+        pass
+
+    return None
 
 # ============================================================
 # FORMAT AVAILABILITY
@@ -1115,13 +1163,34 @@ def format_room_availability(
     # Glamper
     if "glamper" in room_prices:
 
-        lines.append(
+        glamper_rooms_left = None
+
+        for room in rooms:
+
+            if detect_room_type(
+                    room.get("name", "")
+            ) == "glamper":
+                glamper_rooms_left = (
+                    room.get("rooms_left")
+                )
+
+                break
+
+        message = (
             "The Glamper room "
             "(2 occupants) is available "
             f"for Rs. {money(room_prices['glamper'])} "
-            "plus taxes per night. "
-            "(We have 4 Glamper rooms)"
+            "plus taxes per night."
         )
+
+        if glamper_rooms_left is not None:
+            message += (
+                f" (We have "
+                f"{glamper_rooms_left} "
+                f"Glamper rooms)"
+            )
+
+        lines.append(message)
 
     # Surveyor
     if "surveyor" in room_prices:
