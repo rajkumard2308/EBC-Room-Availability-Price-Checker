@@ -1,61 +1,45 @@
-import argparse
-import csv
-import json
-import os
-import platform
-import re
-import sys
-from datetime import datetime
-from pathlib import Path
+"""
+Everest Base Camp - IPMS247 room availability client.
 
-from playwright.sync_api import (
-    sync_playwright,
-    TimeoutError as PlaywrightTimeoutError,
-)
+This Python version replaces the JavaScript fetch + Cheerio implementation
+with requests + BeautifulSoup.
+
+It directly calls the IPMS247 AJAX endpoint:
+POST /booking/rmdetails
+
+No Playwright or Chromium is required.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional
+
+import requests
+from bs4 import BeautifulSoup
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-URL = (
-    "https://live.ipms247.com/booking/"
-    "book-rooms-everestbasecamp"
+BASE_URL = "https://live.ipms247.com/booking"
+BOOKING_PAGE_URL = f"{BASE_URL}/book-rooms-everestbasecamp"
+ROOM_DETAILS_URL = f"{BASE_URL}/rmdetails"
+
+HOTEL_ID = "23400"
+
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) "
+    "AppleWebKit/537.36 "
+    "(KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
 )
 
-CHECKIN_XPATH = '//*[@id="eZ_chkin"]'
-CHECKOUT_XPATH = '//*[@id="eZ_chkout"]'
-AVAILABILITY_XPATH = '//*[@id="book"]'
-
-PER_ROOM_NIGHT_SELECTOR = '//*[@id="pnl_avg_blk"]'
-
-# Room cards
-ROOM_CARD_SELECTOR = "div.card-list.otartrow"
-
-# Price shown after "Per Room Per Night"
-PRICE_SELECTOR = "#rmamt_avg_night"
-
-
-# ============================================================
-# PERFORMANCE SETTINGS
-# ============================================================
-
-# Maximum number of lazy-load scrolls.
-MAX_SCROLLS = 12
-
-# Small delay after scrolling.
-SCROLL_WAIT_MS = 500
-
-# Maximum wait for room cards.
-RESULT_TIMEOUT_MS = 120000
-
-# Maximum page navigation timeout.
-PAGE_TIMEOUT_MS = 90000
-
-
-# ============================================================
-# ROOM ORDER
-# ============================================================
+REQUEST_TIMEOUT = 45
 
 ROOM_TYPE_ORDER = [
     "camper",
@@ -67,1551 +51,943 @@ ROOM_TYPE_ORDER = [
     "villa",
 ]
 
+MONTHS = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+]
+
 
 # ============================================================
-# OPTIONAL OUTPUT DIRECTORY
+# CUSTOM ERRORS
 # ============================================================
 
-OUTPUT_DIR = Path("data")
-OUTPUT_DIR.mkdir(exist_ok=True)
+class ValidationError(Exception):
+    """Raised when user input is invalid."""
 
-JSON_FILE = OUTPUT_DIR / "rooms.json"
-CSV_FILE = OUTPUT_DIR / "rooms.csv"
-TEXT_FILE = OUTPUT_DIR / "room_availability.txt"
+
+class UpstreamError(Exception):
+    """Raised when the booking engine returns an error."""
 
 
 # ============================================================
-# TEXT CLEANING
+# TEXT HELPERS
 # ============================================================
 
-def clean_text(text):
-    if not text:
+def clean_text(value: Any) -> str:
+    """
+    Normalize whitespace and trim text.
+    """
+    if value is None:
         return ""
 
-    return re.sub(
-        r"\s+",
-        " ",
-        str(text)
-    ).strip()
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def money(value: int) -> str:
+    """
+    Format number using comma separators.
+
+    Example:
+        8450 -> "8,450"
+    """
+    return f"{value:,}"
 
 
 # ============================================================
 # DATE VALIDATION
 # ============================================================
 
-def validate_dates(check_in, check_out):
+def parse_date(value: str, label: str) -> date:
+    """
+    Parse a date in DD-MM-YYYY format.
+    """
+
+    value = str(value or "").strip()
+
+    if not re.fullmatch(r"\d{2}-\d{2}-\d{4}", value):
+        raise ValidationError(
+            f"Invalid {label} date. Use DD-MM-YYYY."
+        )
 
     try:
-        check_in_date = datetime.strptime(
-            check_in,
-            "%d-%m-%Y"
-        )
-    except ValueError:
-        raise ValueError(
-            "Invalid check-in date. "
-            "Use DD-MM-YYYY."
-        )
+        parsed_date = datetime.strptime(
+            value,
+            "%d-%m-%Y",
+        ).date()
 
-    try:
-        check_out_date = datetime.strptime(
-            check_out,
-            "%d-%m-%Y"
-        )
-    except ValueError:
-        raise ValueError(
-            "Invalid check-out date. "
-            "Use DD-MM-YYYY."
-        )
+    except ValueError as exc:
+        raise ValidationError(
+            f"Invalid {label} date. Use DD-MM-YYYY."
+        ) from exc
+
+    return parsed_date
+
+
+def validate_dates(
+    check_in: str,
+    check_out: str,
+) -> Dict[str, Any]:
+    """
+    Validate check-in and check-out dates.
+
+    Returns:
+        {
+            "check_in_date": date,
+            "check_out_date": date,
+            "nights": int
+        }
+    """
+
+    check_in_date = parse_date(
+        check_in,
+        "check-in",
+    )
+
+    check_out_date = parse_date(
+        check_out,
+        "check-out",
+    )
 
     if check_out_date <= check_in_date:
-        raise ValueError(
+        raise ValidationError(
             "Check-out must be after check-in."
         )
 
-    return check_in_date, check_out_date
+    nights = (check_out_date - check_in_date).days
+
+    return {
+        "check_in_date": check_in_date,
+        "check_out_date": check_out_date,
+        "nights": nights,
+    }
 
 
 # ============================================================
-# DATE DISPLAY
+# DATE FORMATTING
 # ============================================================
 
-def format_short_date(date_text):
+def format_short_date(value: date) -> str:
     """
-    23-08-2026 -> 23Aug
+    Convert date to:
+
+        15 Sep
     """
 
-    date_obj = datetime.strptime(
-        date_text,
-        "%d-%m-%Y"
-    )
-
-    return date_obj.strftime("%d %b")
+    return f"{value.day:02d} {MONTHS[value.month - 1]}"
 
 
-def format_date_range(check_in, check_out):
+def format_date_range(
+    check_in_date: date,
+    check_out_date: date,
+) -> str:
     """
-    23-08-2026, 25-08-2026
-    ->
-    23Aug-25Aug
+    Convert dates to:
+
+        15 Sep - 17 Sep
     """
 
     return (
-        f"{format_short_date(check_in)} - "
-        f"{format_short_date(check_out)}"
+        f"{format_short_date(check_in_date)} - "
+        f"{format_short_date(check_out_date)}"
     )
 
 
-# ============================================================
-# CALENDAR
-# ============================================================
+def to_iso_date(value: date) -> str:
+    """
+    Convert date to YYYY-MM-DD.
+    """
 
-def wait_for_calendar(page):
-
-    selectors = [
-        "#ui-datepicker-div",
-        ".ui-datepicker",
-        ".ui-datepicker-calendar",
-        "[class*='datepicker']",
-    ]
-
-    for _ in range(15):
-
-        for selector in selectors:
-
-            try:
-
-                calendars = page.locator(
-                    selector
-                )
-
-                count = calendars.count()
-
-                for i in range(count):
-
-                    calendar = calendars.nth(i)
-
-                    if calendar.is_visible():
-                        return calendar
-
-            except Exception:
-                continue
-
-        page.wait_for_timeout(150)
-
-    raise RuntimeError(
-        "Date calendar was not found."
-    )
+    return value.isoformat()
 
 
 # ============================================================
-# CALENDAR MONTH / YEAR
+# PRICE CONVERSION
 # ============================================================
 
-def get_calendar_month_year(calendar):
+def convert_price(price_text: Any) -> Optional[int]:
+    """
+    Extract the first price from text and round DOWN
+    to the nearest 100.
 
-    month_name = None
-    year = None
+    Examples:
 
-    try:
+        Rs. 7,687.50 -> 7,600
+        Rs. 9,225.00 -> 9,200
+        Rs. 12,300 -> 12,300
 
-        element = calendar.locator(
-            ".ui-datepicker-month"
-        ).first
+    This implementation safely handles:
 
-        if element.count():
+        Rs. 8,450
 
-            month_name = clean_text(
-                element.inner_text()
-            )
-
-    except Exception:
-        pass
-
-    try:
-
-        element = calendar.locator(
-            ".ui-datepicker-year"
-        ).first
-
-        if element.count():
-
-            year_text = clean_text(
-                element.inner_text()
-            )
-
-            if year_text.isdigit():
-                year = int(year_text)
-
-    except Exception:
-        pass
-
-    return month_name, year
-
-
-# ============================================================
-# CURRENT CALENDAR DATE
-# ============================================================
-
-def get_calendar_current_date(calendar):
-
-    month_name, year = (
-        get_calendar_month_year(
-            calendar
-        )
-    )
-
-    months = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ]
-
-    if (
-        month_name
-        and year
-        and month_name in months
-    ):
-
-        month = (
-            months.index(
-                month_name
-            ) + 1
-        )
-
-        return year, month
-
-    now = datetime.now()
-
-    return now.year, now.month
-
-
-# ============================================================
-# CALENDAR NAVIGATION
-# ============================================================
-
-def click_calendar_navigation(
-    calendar,
-    direction
-):
-
-    if direction == "next":
-
-        selectors = [
-            ".ui-datepicker-next",
-            "a.ui-datepicker-next",
-        ]
-
-    else:
-
-        selectors = [
-            ".ui-datepicker-prev",
-            "a.ui-datepicker-prev",
-        ]
-
-    for selector in selectors:
-
-        try:
-
-            buttons = calendar.locator(
-                selector
-            )
-
-            count = buttons.count()
-
-            for i in range(count):
-
-                button = buttons.nth(i)
-
-                if not button.is_visible():
-                    continue
-
-                if not button.is_enabled():
-                    continue
-
-                button.click(
-                    timeout=3000
-                )
-
-                return True
-
-        except Exception:
-            continue
-
-    return False
-
-
-# ============================================================
-# NAVIGATE TO TARGET MONTH
-# ============================================================
-
-def navigate_calendar(
-    page,
-    calendar,
-    target_date
-):
-
-    target_year = target_date.year
-    target_month = target_date.month
-
-    current_year, current_month = (
-        get_calendar_current_date(
-            calendar
-        )
-    )
-
-    difference = (
-        (target_year - current_year) * 12
-        + (target_month - current_month)
-    )
-
-    if difference == 0:
-        return
-
-    direction = (
-        "next"
-        if difference > 0
-        else "previous"
-    )
-
-    for _ in range(abs(difference)):
-
-        calendar = wait_for_calendar(page)
-
-        if not click_calendar_navigation(
-            calendar,
-            direction
-        ):
-            raise RuntimeError(
-                "Could not navigate calendar."
-            )
-
-        page.wait_for_timeout(100)
-
-
-# ============================================================
-# SELECT DATE
-# ============================================================
-
-def select_date(
-    page,
-    input_xpath,
-    date_text
-):
-
-    target_date = datetime.strptime(
-        date_text,
-        "%d-%m-%Y"
-    )
-
-    # Click input
-    field = page.locator(
-        f"xpath={input_xpath}"
-    )
-
-    field.wait_for(
-        state="visible",
-        timeout=15000
-    )
-
-    field.click()
-
-    page.wait_for_timeout(150)
-
-    # Find calendar
-    calendar = wait_for_calendar(page)
-
-    # Navigate month
-    navigate_calendar(
-        page,
-        calendar,
-        target_date
-    )
-
-    calendar = wait_for_calendar(page)
-
-    # --------------------------------------------------------
-    # Find correct day
-    # --------------------------------------------------------
-
-    day = target_date.day
-
-    selectors = [
-        f"td[data-handler='selectDay'] a:text-is('{day}')",
-        f"td a:text-is('{day}')",
-        f"td[data-handler='selectDay'] a:has-text('{day}')",
-    ]
-
-    selected = False
-
-    for selector in selectors:
-
-        try:
-
-            elements = calendar.locator(
-                selector
-            )
-
-            count = elements.count()
-
-            for i in range(count):
-
-                element = elements.nth(i)
-
-                if not element.is_visible():
-                    continue
-
-                # Avoid days belonging to
-                # previous/next month.
-                try:
-
-                    parent = element.locator(
-                        ".."
-                    )
-
-                    class_name = (
-                        parent.get_attribute(
-                            "class"
-                        )
-                        or ""
-                    )
-
-                    if (
-                        "ui-datepicker-other-month"
-                        in class_name
-                    ):
-                        continue
-
-                except Exception:
-                    pass
-
-                element.click(
-                    timeout=5000
-                )
-
-                selected = True
-                break
-
-            if selected:
-                break
-
-        except Exception:
-            continue
-
-    if not selected:
-        raise RuntimeError(
-            f"Could not select date {date_text}"
-        )
-
-    page.wait_for_timeout(200)
-
-    # Verify value
-    actual_value = clean_text(
-        field.input_value()
-    )
-
-    if actual_value != date_text:
-
-        # Sometimes the website formats
-        # the date slightly differently.
-        # Check normalized dates.
-        try:
-
-            actual_date = datetime.strptime(
-                actual_value,
-                "%d-%m-%Y"
-            )
-
-            if actual_date.date() != target_date.date():
-
-                raise RuntimeError(
-                    f"Date verification failed. "
-                    f"Expected {date_text}, "
-                    f"got {actual_value}"
-                )
-
-        except ValueError:
-
-            raise RuntimeError(
-                f"Date verification failed. "
-                f"Expected {date_text}, "
-                f"got {actual_value}"
-            )
-
-    return actual_value
-
-
-# ============================================================
-# ENTER DATES
-# ============================================================
-
-def enter_dates(
-    page,
-    check_in,
-    check_out
-):
-
-    select_date(
-        page,
-        CHECKIN_XPATH,
-        check_in
-    )
-
-    select_date(
-        page,
-        CHECKOUT_XPATH,
-        check_out
-    )
-
-    # Final verification
-    actual_check_in = clean_text(
-        page.locator(
-            f"xpath={CHECKIN_XPATH}"
-        ).input_value()
-    )
-
-    actual_check_out = clean_text(
-        page.locator(
-            f"xpath={CHECKOUT_XPATH}"
-        ).input_value()
-    )
-
-    if actual_check_in != check_in:
-        raise RuntimeError(
-            f"Check-in verification failed: "
-            f"{actual_check_in}"
-        )
-
-    if actual_check_out != check_out:
-        raise RuntimeError(
-            f"Check-out verification failed: "
-            f"{actual_check_out}"
-        )
-
-
-# ============================================================
-# CHECK AVAILABILITY
-# ============================================================
-
-def click_check_availability(page):
-
-    button = page.locator(
-        f"xpath={AVAILABILITY_XPATH}"
-    )
-
-    button.wait_for(
-        state="visible",
-        timeout=15000
-    )
-
-    button.click(
-        timeout=10000
-    )
-
-
-# ============================================================
-# WAIT FOR ROOM RESULTS
-# ============================================================
-
-def wait_for_rooms(page):
-    print("\n" + "=" * 70)
-    print("WAITING FOR ROOM RESULTS")
-    print("=" * 70)
-
-    cards = page.locator(ROOM_CARD_SELECTOR)
-
-    try:
-        # Wait for the first actual room card.
-        cards.first.wait_for(
-            state="visible",
-            timeout=120000
-        )
-
-        print("✓ First room card detected.")
-
-    except PlaywrightTimeoutError:
-        # Give the page a final moment and inspect it.
-        page.wait_for_timeout(5000)
-
-        count = cards.count()
-
-        if count == 0:
-            raise RuntimeError(
-                "Room results did not load within 120 seconds."
-            )
-
-    # Allow prices and room details to finish rendering.
-    page.wait_for_timeout(3000)
-
-    print(
-        f"✓ Room results loaded. "
-        f"Cards found: {cards.count()}"
-    )
-
-
-# ============================================================
-# PER ROOM PER NIGHT
-# ============================================================
-
-def select_per_room_per_night(page):
-    print("\n" + "=" * 70)
-    print("SELECTING PER ROOM PER NIGHT")
-    print("=" * 70)
-
-    selector = page.locator("#pnl_avg_blk")
-
-    try:
-        selector.wait_for(
-            state="visible",
-            timeout=30000
-        )
-
-        selector.scroll_into_view_if_needed()
-
-        page.wait_for_timeout(1000)
-
-        selector.click(
-            timeout=10000
-        )
-
-        print("✓ Per Room Per Night clicked.")
-
-    except PlaywrightTimeoutError:
-        raise RuntimeError(
-            "Per Room Per Night option was not available."
-        )
-
-    # Give IPMS247 time to update the displayed prices.
-    page.wait_for_timeout(3000)
-
-    print("✓ Per Room Per Night price update completed.")
-
-
-# ============================================================
-# LOAD ALL ROOMS
-# ============================================================
-
-def load_all_rooms(page):
-
-    cards = page.locator(
-        ROOM_CARD_SELECTOR
-    )
-
-    previous_count = 0
-    stable_rounds = 0
-
-    for scroll_number in range(
-        MAX_SCROLLS
-    ):
-
-        current_count = cards.count()
-
-        # Scroll near bottom.
-        page.evaluate(
-            """
-            () => {
-                window.scrollTo(
-                    0,
-                    document.body.scrollHeight
-                );
-            }
-            """
-        )
-
-        page.wait_for_timeout(
-            SCROLL_WAIT_MS
-        )
-
-        new_count = cards.count()
-
-        if new_count == previous_count:
-            stable_rounds += 1
-        else:
-            stable_rounds = 0
-
-        previous_count = new_count
-
-        # Once no new cards appear twice,
-        # stop scrolling.
-        if stable_rounds >= 2:
-            break
-
-    return cards.count()
-
-
-# ============================================================
-# CARD NAME
-# ============================================================
-
-def get_card_name(card):
-
-    selectors = [
-        "h3",
-        ".room-name",
-        ".room-title",
-        "[class*='room-name']",
-        "[class*='room-title']",
-    ]
-
-    for selector in selectors:
-
-        try:
-
-            element = card.locator(
-                selector
-            ).first
-
-            if element.count() == 0:
-                continue
-
-            if not element.is_visible():
-                continue
-
-            text = clean_text(
-                element.inner_text()
-            )
-
-            if text:
-                return text
-
-        except Exception:
-            continue
-
-    # Fallback:
-    # Search text around likely title.
-    try:
-
-        text = clean_text(
-            card.inner_text()
-        )
-
-        lines = [
-            clean_text(x)
-            for x in text.split("\n")
-            if clean_text(x)
-        ]
-
-        for line in lines:
-
-            lower = line.lower()
-
-            if any(
-                word in lower
-                for word in [
-                    "camper",
-                    "glamper",
-                    "surveyor",
-                    "zenith",
-                    "twin luxury",
-                    "villa",
-                ]
-            ):
-                return line
-
-    except Exception:
-        pass
-
-    return ""
-
-
-# ============================================================
-# CARD PRICE
-# ============================================================
-
-def get_card_price(card):
-
-    selectors = [
-        PRICE_SELECTOR,
-        "#rmamt_avg_night",
-        ".rmamt_avg_night",
-        "[id*='rmamt_avg_night']",
-    ]
-
-    for selector in selectors:
-
-        try:
-
-            element = card.locator(
-                selector
-            ).first
-
-            if element.count() == 0:
-                continue
-
-            text = clean_text(
-                element.inner_text()
-            )
-
-            if text:
-                return text
-
-        except Exception:
-            continue
-
-    # Fallback:
-    # Search card text for Rs price.
-    try:
-
-        text = clean_text(
-            card.inner_text()
-        )
-
-        matches = re.findall(
-            r"(?:Rs\.?|₹)\s*[\d,]+(?:\.\d+)?",
-            text,
-            flags=re.IGNORECASE
-        )
-
-        if matches:
-            return matches[-1]
-
-    except Exception:
-        pass
-
-    return ""
-
-
-# ============================================================
-# CONVERT PRICE
-# ============================================================
-
-def convert_price(price_text):
+    without incorrectly reading the period in "Rs.".
+    """
 
     if not price_text:
         return None
 
-    cleaned = (
-        str(price_text)
-        .replace(",", "")
-        .strip()
+    text = str(price_text)
+
+    # Extract the first complete number.
+    match = re.search(
+        r"(\d[\d,]*(?:\.\d+)?)",
+        text,
     )
 
-    cleaned = re.sub(
-        r"[^\d.]",
-        "",
-        cleaned
-    )
-
-    if not cleaned:
+    if not match:
         return None
 
-    try:
+    number_text = match.group(1).replace(",", "")
 
-        value = float(
-            cleaned
-        )
+    try:
+        value = float(number_text)
 
     except ValueError:
-
         return None
 
     if value <= 0:
         return None
 
-    # Round DOWN to nearest 100.
-    #
-    # 7687.50 -> 7600
-    # 9225.00 -> 9200
-    # 11530   -> 11500
-    # 12300   -> 12300
-    # 15370   -> 15300
+    rounded_value = int(value // 100) * 100
 
-    return (
-        int(value) // 100
-    ) * 100
+    if rounded_value <= 0:
+        return None
+
+    return rounded_value
 
 
 # ============================================================
-# ROOM TYPE
+# ROOM TYPE DETECTION
 # ============================================================
 
-def detect_room_type(name):
+def detect_room_type(name: Any) -> Optional[str]:
+    """
+    Detect room type from room name.
 
-    name_lower = (
-        name or ""
-    ).lower()
+    Surveyor Suite must be checked before Surveyor.
+    """
 
-    # IMPORTANT:
-    # Surveyor Suite BEFORE Surveyor.
-    if "surveyor suite" in name_lower:
+    room_name = str(name or "").lower()
+
+    if "surveyor suite" in room_name:
         return "surveyor_suite"
 
-    if "surveyor" in name_lower:
+    if "surveyor" in room_name:
         return "surveyor"
 
-    if "camper" in name_lower:
+    if "camper" in room_name:
         return "camper"
 
-    if "glamper" in name_lower:
+    if "glamper" in room_name:
         return "glamper"
 
-    if "zenith" in name_lower:
+    if "zenith" in room_name:
         return "zenith"
 
-    if "twin luxury" in name_lower:
+    if "twin luxury" in room_name:
         return "twin_luxury"
 
-    if "villa" in name_lower:
+    if "villa" in room_name:
         return "villa"
 
     return None
 
 
 # ============================================================
-# SCRAPE FIRST CARD PER ROOM TYPE
+# HTML CARD HELPERS
 # ============================================================
 
-def scrape_rooms(page):
+def get_card_name(card: Any) -> str:
+    """
+    Extract room name from one room card.
+    """
 
-    load_all_rooms(page)
+    selectors = [
+        "h3",
+        ".room-name",
+        ".room-title",
+        '[class*="room-name"]',
+        '[class*="room-title"]',
+    ]
 
-    cards = page.locator(
-        ROOM_CARD_SELECTOR
+    for selector in selectors:
+        element = card.select_one(selector)
+
+        if element:
+            text = clean_text(element.get_text(" ", strip=True))
+
+            if text:
+                return text
+
+    # Fallback: scan card text for a known room keyword.
+    card_text = clean_text(card.get_text(" ", strip=True))
+
+    for line in card_text.split("\n"):
+        line = clean_text(line)
+
+        if detect_room_type(line):
+            return line
+
+    return ""
+
+
+def get_card_price(card: Any) -> str:
+    """
+    Extract the average per-room-per-night price.
+
+    The AJAX response is expected to contain the average price
+    in the HTML, even though it may initially be hidden in the
+    browser version.
+    """
+
+    selectors = [
+        "#rmamt_avg_night",
+        ".avg_cls",
+        '[id*="rmamt_avg_night"]',
+    ]
+
+    for selector in selectors:
+        element = card.select_one(selector)
+
+        if element:
+            text = clean_text(element.get_text(" ", strip=True))
+
+            if text:
+                return text
+
+    # Fallback: find the last Rs. or ₹ amount in the card.
+    card_text = clean_text(card.get_text(" ", strip=True))
+
+    matches = re.findall(
+        r"(?:Rs\.?|₹)\s*[\d,]+(?:\.\d+)?",
+        card_text,
+        flags=re.IGNORECASE,
     )
 
-    total_cards = cards.count()
+    if matches:
+        return matches[-1]
 
-    # Keep first card for name/price
-    # but inspect ALL cards for rooms-left count.
-    first_cards = {}
-    rooms_left_by_type = {}
+    return ""
 
-    for index in range(total_cards):
 
-        try:
-            card = cards.nth(index)
+def get_rooms_left(card: Any) -> Optional[int]:
+    """
+    Extract room availability count from a card.
 
-            name = get_card_name(card)
+    Supported examples:
 
-            if not name:
-                continue
+        3 rooms left
+        Hurry! 2 rooms left
+        Only 1 room left
+    """
 
-            room_type = detect_room_type(name)
+    card_text = clean_text(card.get_text(" ", strip=True))
 
-            if not room_type:
-                continue
+    patterns = [
+        r"(?:hurry!\s*)?(\d+)\s+rooms?\s+left",
+        r"only\s+(\d+)\s+rooms?\s+left",
+    ]
 
-            # Keep first card for this room type
-            if room_type not in first_cards:
-                first_cards[room_type] = card
-
-            # Get actual "Rooms Left"
-            count = get_rooms_left(card)
-
-            if count is not None:
-
-                previous = rooms_left_by_type.get(
-                    room_type
-                )
-
-                if (
-                    previous is None
-                    or count > previous
-                ):
-                    rooms_left_by_type[
-                        room_type
-                    ] = count
-
-        except Exception:
-            continue
-
-    rooms = []
-
-    # Fixed room order
-    for room_type in ROOM_TYPE_ORDER:
-
-        if room_type not in first_cards:
-            continue
-
-        card = first_cards[room_type]
-
-        name = get_card_name(card)
-
-        website_price = get_card_price(card)
-
-        price = convert_price(
-            website_price
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            card_text,
+            flags=re.IGNORECASE,
         )
 
-        # Never store null
+        if match:
+            try:
+                return int(match.group(1))
+
+            except ValueError:
+                return None
+
+    return None
+
+
+# ============================================================
+# PARSE ROOM RESULTS
+# ============================================================
+
+def parse_rooms(html: str) -> List[Dict[str, Any]]:
+    """
+    Parse room cards from the IPMS247 results HTML.
+
+    Logic:
+    - Find all room cards.
+    - Keep the first card for each room type.
+    - Scan every card to find the highest rooms-left count.
+    - Return rooms in the fixed display order.
+    """
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    cards = soup.select(
+        "div.card-list.otartrow"
+    )
+
+    first_cards: Dict[str, Any] = {}
+    rooms_left_by_type: Dict[str, int] = {}
+
+    for card in cards:
+        name = get_card_name(card)
+
         if not name:
             continue
 
-        if price is None:
+        room_type = detect_room_type(name)
+
+        if not room_type:
             continue
 
-        room = {
+        # Keep the first card for each room type.
+        if room_type not in first_cards:
+            first_cards[room_type] = card
+
+        # Scan every card for the highest room count.
+        rooms_left = get_rooms_left(card)
+
+        if rooms_left is not None:
+            previous_value = rooms_left_by_type.get(room_type)
+
+            if (
+                previous_value is None
+                or rooms_left > previous_value
+            ):
+                rooms_left_by_type[room_type] = rooms_left
+
+    rooms: List[Dict[str, Any]] = []
+
+    for room_type in ROOM_TYPE_ORDER:
+        card = first_cards.get(room_type)
+
+        if card is None:
+            continue
+
+        name = get_card_name(card)
+        price_text = get_card_price(card)
+        price = convert_price(price_text)
+
+        if not name or price is None:
+            continue
+
+        room: Dict[str, Any] = {
             "name": name,
             "price": price,
         }
 
-        # Add actual rooms-left count
         if room_type in rooms_left_by_type:
-
-            room["rooms_left"] = (
-                rooms_left_by_type[
-                    room_type
-                ]
-            )
+            room["rooms_left"] = rooms_left_by_type[room_type]
 
         rooms.append(room)
 
     return rooms
 
-# ============================================================
-# ROOMS LEFT
-# ============================================================
-
-def get_rooms_left(card):
-    """
-    Extract the actual number of rooms left from a room card.
-    """
-
-    try:
-        text = clean_text(card.inner_text())
-
-        patterns = [
-            r"(?:hurry!\s*)?(\d+)\s+rooms?\s+left",
-            r"only\s+(\d+)\s+rooms?\s+left",
-        ]
-
-        for pattern in patterns:
-            match = re.search(
-                pattern,
-                text,
-                flags=re.IGNORECASE
-            )
-
-            if match:
-                return int(match.group(1))
-
-    except Exception:
-        pass
-
-    return None
 
 # ============================================================
-# FORMAT AVAILABILITY
+# AVAILABILITY TEXT
 # ============================================================
 
 def format_room_availability(
-    rooms,
-    check_in,
-    check_out
-):
+    rooms: List[Dict[str, Any]],
+    check_in_date: date,
+    check_out_date: date,
+) -> str:
+    """
+    Format room data into the same availability text
+    used by the JavaScript implementation.
+    """
 
-    room_prices = {}
+    room_prices: Dict[str, int] = {}
 
     for room in rooms:
+        name = room.get("name")
+        price = room.get("price")
 
-        name = room.get(
-            "name",
-            ""
-        )
-
-        price = room.get(
-            "price"
-        )
-
-        if not name:
+        if not name or price is None:
             continue
 
-        if price is None:
-            continue
-
-        room_type = detect_room_type(
-            name
-        )
+        room_type = detect_room_type(name)
 
         if room_type:
-            room_prices[
-                room_type
-            ] = price
-
-    def money(value):
-        return f"{value:,}"
-
-    date_range = format_date_range(
-        check_in,
-        check_out
-    )
+            room_prices[room_type] = price
 
     lines = [
-        f"For {date_range}, "
-        "Here is the Room availability "
-        "with prices below:"
+        (
+            f"For {format_date_range(check_in_date, check_out_date)}, "
+            "Here is the Room availability with prices below:"
+        )
     ]
 
-    # Camper
     if "camper" in room_prices:
-
         lines.append(
-            "The Camper room "
-            "(2 occupants) is available "
-            f"for Rs. {money(room_prices['camper'])} "
-            "plus taxes per night."
+            (
+                "The Camper room (2 occupants) is available for "
+                f"Rs. {money(room_prices['camper'])} "
+                "plus taxes per night."
+            )
         )
 
-    # Glamper
     if "glamper" in room_prices:
-
         glamper_rooms_left = None
 
         for room in rooms:
-
-            if detect_room_type(
-                    room.get("name", "")
-            ) == "glamper":
-                glamper_rooms_left = (
-                    room.get("rooms_left")
-                )
-
+            if detect_room_type(room.get("name")) == "glamper":
+                glamper_rooms_left = room.get("rooms_left")
                 break
 
         message = (
-            "The Glamper room "
-            "(2 occupants) is available "
-            f"for Rs. {money(room_prices['glamper'])} "
+            "The Glamper room (2 occupants) is available for "
+            f"Rs. {money(room_prices['glamper'])} "
             "plus taxes per night."
         )
 
         if glamper_rooms_left is not None:
             message += (
-                f" (We have "
-                f"{glamper_rooms_left} "
-                f"Glamper rooms)"
+                f" (We have {glamper_rooms_left} Glamper rooms)"
             )
 
         lines.append(message)
 
-    # Surveyor
     if "surveyor" in room_prices:
-
         lines.append(
-            "The Surveyor room "
-            "(2 occupants) is available "
-            f"for Rs. {money(room_prices['surveyor'])} "
-            "plus taxes per night."
+            (
+                "The Surveyor room (2 occupants) is available for "
+                f"Rs. {money(room_prices['surveyor'])} "
+                "plus taxes per night."
+            )
         )
 
-    # Surveyor Suite
     if "surveyor_suite" in room_prices:
-
         lines.append(
-            "The Surveyor suite room "
-            "(2 occupants) is available "
-            f"for Rs. "
-            f"{money(room_prices['surveyor_suite'])} "
-            "plus taxes per night."
+            (
+                "The Surveyor suite room (2 occupants) is available for "
+                f"Rs. {money(room_prices['surveyor_suite'])} "
+                "plus taxes per night."
+            )
         )
 
-    # Zenith
     if "zenith" in room_prices:
-
         lines.append(
-            "The Zenith luxury cottage "
-            "(2 occupants) is available "
-            f"for Rs. {money(room_prices['zenith'])} "
-            "plus taxes per night."
+            (
+                "The Zenith luxury cottage (2 occupants) is available for "
+                f"Rs. {money(room_prices['zenith'])} "
+                "plus taxes per night."
+            )
         )
 
-    # Twin Luxury
     if "twin_luxury" in room_prices:
-
         lines.append(
-            "The twin luxury cottage "
-            "(2 occupants / Room) is available "
-            f"for Rs. "
-            f"{money(room_prices['twin_luxury'])} "
-            "plus taxes per night. "
-            "(2 Rooms next to each other)"
+            (
+                "The twin luxury cottage "
+                "(2 occupants / Room) is available for "
+                f"Rs. {money(room_prices['twin_luxury'])} "
+                "plus taxes per night. "
+                "(2 Rooms next to each other)"
+            )
         )
 
-    # Villa
     if "villa" in room_prices:
-
-        villa_price = (
-            room_prices["villa"] * 2
-        )
+        # Villa is quoted as a two-room unit.
+        villa_price = room_prices["villa"] * 2
 
         lines.append(
-            "The Villa "
-            "(2 occupants/room) is available "
-            f"for Rs. {money(villa_price)} "
-            "plus taxes per night. "
-            "(2 Rooms villa)"
+            (
+                "The Villa (2 occupants/room) is available for "
+                f"Rs. {money(villa_price)} "
+                "plus taxes per night. "
+                "(2 Rooms villa)"
+            )
         )
 
     return "\n".join(lines)
 
 
 # ============================================================
-# BROWSER LAUNCH
+# HTTP SESSION
 # ============================================================
 
-def launch_browser(playwright):
+def create_session() -> requests.Session:
+    """
+    Create a requests session with browser-like headers.
+    """
 
-    # Streamlit Cloud is Linux.
-    #
-    # Always run headless.
-    #
-    # First try system Chromium.
-    # Then fallback to Playwright Chromium.
+    session = requests.Session()
 
-    chromium_paths = [
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-    ]
+    session.headers.update(
+        {
+            "User-Agent": USER_AGENT,
+            "Accept": (
+                "text/html,application/xhtml+xml,"
+                "application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-IN,en;q=0.9",
+            "Connection": "keep-alive",
+        }
+    )
 
-    chromium_path = None
+    return session
 
-    for path in chromium_paths:
 
-        if os.path.exists(path):
+def open_session(session: requests.Session) -> None:
+    """
+    Open the public booking page first.
 
-            chromium_path = path
-            break
+    IPMS247 may create a PHP session cookie on this page.
+    The same session must then be used for the AJAX request.
+    """
 
-    browser_args = [
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-software-rasterizer",
-        "--disable-background-networking",
-        "--disable-background-timer-throttling",
-        "--disable-renderer-backgrounding",
-        "--disable-features=Translate",
-        "--disable-extensions",
-    ]
-
-    if chromium_path:
-
-        return playwright.chromium.launch(
-            executable_path=chromium_path,
-            headless=True,
-            args=browser_args,
+    try:
+        response = session.get(
+            BOOKING_PAGE_URL,
+            timeout=REQUEST_TIMEOUT,
         )
 
-    return playwright.chromium.launch(
-        headless=True,
-        args=browser_args,
-    )
+    except requests.RequestException as exc:
+        raise UpstreamError(
+            f"Unable to open booking page: {exc}"
+        ) from exc
+
+    if not response.ok:
+        raise UpstreamError(
+            "Booking engine returned "
+            f"HTTP {response.status_code} "
+            "when opening the booking page."
+        )
+
+    if not session.cookies:
+        raise UpstreamError(
+            "Booking engine did not issue a session cookie."
+        )
+
+
+def fetch_room_details(
+    session: requests.Session,
+    check_in: str,
+    check_in_date: date,
+    nights: int,
+) -> str:
+    """
+    Call the IPMS247 AJAX room-details endpoint.
+    """
+
+    payload = {
+        "checkin": check_in,
+        "gridcolumn": "1",
+        "adults": "1",
+        "child": "0",
+        "nonights": str(nights),
+        "ShowSelectedNights": "true",
+        "DefaultSelectedNights": str(nights),
+        "calendarDateFormat": "dd-mm-yy",
+        "rooms": "1",
+        "promotion": "",
+        "ArrvalDt": to_iso_date(check_in_date),
+        "HotelId": HOTEL_ID,
+        "isLogin": "lf",
+        "selectedLang": "",
+        "modifysearch": "false",
+        "promotioncode": "",
+        "layoutView": "2",
+        "ShowMinNightsMatchedRatePlan": "false",
+        "LayoutTheme": "2",
+        "w_showadult": "false",
+        "w_showchild_bb": "false",
+        "ShowMoreLessOpt": "",
+        "w_showchild": "true",
+        "metasearch": "",
+        "ischeckavailabilityclicked": "1",
+    }
+
+    headers = {
+        "Content-Type": (
+            "application/x-www-form-urlencoded; charset=UTF-8"
+        ),
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": BOOKING_PAGE_URL,
+        "Origin": "https://live.ipms247.com",
+        "Accept-Language": "en-IN,en;q=0.9",
+    }
+
+    try:
+        response = session.post(
+            ROOM_DETAILS_URL,
+            data=payload,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+    except requests.RequestException as exc:
+        raise UpstreamError(
+            f"Unable to fetch room details: {exc}"
+        ) from exc
+
+    html = response.text or ""
+
+    if not response.ok:
+        if re.search(
+            r"sucuri|access denied",
+            html,
+            flags=re.IGNORECASE,
+        ):
+            raise UpstreamError(
+                "The booking engine firewall blocked this request. "
+                "If this persists, ask IPMS247/eZee support to allow "
+                "your deployment."
+            )
+
+        raise UpstreamError(
+            "Booking engine returned "
+            f"HTTP {response.status_code} "
+            "for the room results."
+        )
+
+    return html
 
 
 # ============================================================
-# BLOCK UNNECESSARY RESOURCES
-# ============================================================
-
-def optimize_page(page):
-
-    def handle_route(route):
-
-        request = route.request
-
-        resource_type = request.resource_type
-
-        # We don't need these resources
-        # for room names/prices.
-        #
-        # IMPORTANT:
-        # Do NOT block scripts/XHR/fetch.
-        # The booking system needs them.
-
-        if resource_type in {
-            "image",
-            "media",
-            "font",
-        }:
-
-            route.abort()
-            return
-
-        route.continue_()
-
-    page.route(
-        "**/*",
-        handle_route
-    )
-
-
-# ============================================================
-# SCRAPE AVAILABILITY
+# PUBLIC SCRAPER FUNCTION
 # ============================================================
 
 def scrape_availability(
-    check_in,
-    check_out
-):
+    check_in: str,
+    check_out: str,
+) -> Dict[str, Any]:
+    """
+    Main public function.
 
-    validate_dates(
+    Example:
+
+        result = scrape_availability(
+            "15-09-2026",
+            "17-09-2026",
+        )
+    """
+
+    date_data = validate_dates(
         check_in,
-        check_out
+        check_out,
     )
 
-    with sync_playwright() as playwright:
+    check_in_date = date_data["check_in_date"]
+    check_out_date = date_data["check_out_date"]
+    nights = date_data["nights"]
 
-        browser = None
+    session = create_session()
 
-        try:
+    open_session(session)
 
-            browser = launch_browser(
-                playwright
-            )
+    html = fetch_room_details(
+        session=session,
+        check_in=check_in,
+        check_in_date=check_in_date,
+        nights=nights,
+    )
 
-            context = browser.new_context(
-                viewport={
-                    "width": 1366,
-                    "height": 768,
-                },
-                locale="en-IN",
-                timezone_id="Asia/Kolkata",
-                user_agent=(
-                    "Mozilla/5.0 "
-                    "(X11; Linux x86_64) "
-                    "AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 "
-                    "Safari/537.36"
-                ),
-            )
+    rooms = parse_rooms(html)
 
-            page = context.new_page()
+    if not rooms:
+        raise UpstreamError(
+            "No rooms were returned for these dates. "
+            "The property may be sold out, or the booking engine "
+            "layout may have changed."
+        )
 
-            page.set_default_timeout(
-                15000
-            )
+    availability_text = format_room_availability(
+        rooms=rooms,
+        check_in_date=check_in_date,
+        check_out_date=check_out_date,
+    )
 
-            page.set_default_navigation_timeout(
-                PAGE_TIMEOUT_MS
-            )
-
-            # Optimize unnecessary resources.
-            optimize_page(page)
-
-            # ------------------------------------------------
-            # OPEN WEBSITE
-            # ------------------------------------------------
-
-            page.goto(
-                URL,
-                wait_until="domcontentloaded",
-                timeout=PAGE_TIMEOUT_MS
-            )
-
-            # Small initial wait only.
-            page.wait_for_timeout(1000)
-
-            # ------------------------------------------------
-            # DATES
-            # ------------------------------------------------
-
-            enter_dates(
-                page,
-                check_in,
-                check_out
-            )
-
-            # ------------------------------------------------
-            # AVAILABILITY
-            # ------------------------------------------------
-
-            click_check_availability(
-                page
-            )
-
-            # ------------------------------------------------
-            # WAIT FOR ROOMS
-            # ------------------------------------------------
-
-            wait_for_rooms(
-                page
-            )
-
-            # ------------------------------------------------
-            # PER ROOM PER NIGHT
-            # ------------------------------------------------
-
-            select_per_room_per_night(
-                page
-            )
-
-            # ------------------------------------------------
-            # SCRAPE
-            # ------------------------------------------------
-
-            rooms = scrape_rooms(
-                page
-            )
-
-            # ------------------------------------------------
-            # FORMAT RESULT
-            # ------------------------------------------------
-
-            availability_text = (
-                format_room_availability(
-                    rooms,
-                    check_in,
-                    check_out
-                )
-            )
-
-            result = {
-                "check_in": check_in,
-                "check_out": check_out,
-                "rooms": rooms,
-                "availability_text": availability_text,
-            }
-
-            return result
-
-        finally:
-
-            if browser:
-
-                try:
-                    browser.close()
-                except Exception:
-                    pass
+    return {
+        "check_in": check_in,
+        "check_out": check_out,
+        "nights": nights,
+        "rooms": rooms,
+        "availability_text": availability_text,
+    }
 
 
 # ============================================================
-# SAVE JSON
+# FILE EXPORT HELPERS
 # ============================================================
 
-def save_json(result):
+def save_json(
+    result: Dict[str, Any],
+    filename: str = "availability.json",
+) -> None:
+    """
+    Save result as JSON.
+    """
 
     with open(
-        JSON_FILE,
+        filename,
         "w",
-        encoding="utf-8"
+        encoding="utf-8",
     ) as file:
-
         json.dump(
             result,
             file,
             indent=4,
-            ensure_ascii=False
+            ensure_ascii=False,
         )
 
 
-# ============================================================
-# SAVE CSV
-# ============================================================
-
-def save_csv(rooms):
+def save_text(
+    result: Dict[str, Any],
+    filename: str = "availability.txt",
+) -> None:
+    """
+    Save formatted availability text.
+    """
 
     with open(
-        CSV_FILE,
+        filename,
+        "w",
+        encoding="utf-8",
+    ) as file:
+        file.write(
+            result.get("availability_text", "")
+        )
+
+
+def save_csv(
+    result: Dict[str, Any],
+    filename: str = "availability.csv",
+) -> None:
+    """
+    Save room results as CSV.
+    """
+
+    import csv
+
+    rooms = result.get("rooms", [])
+
+    with open(
+        filename,
         "w",
         newline="",
-        encoding="utf-8-sig"
+        encoding="utf-8",
     ) as file:
-
         writer = csv.DictWriter(
             file,
             fieldnames=[
                 "name",
                 "price",
-            ]
+                "rooms_left",
+            ],
         )
 
         writer.writeheader()
 
         for room in rooms:
-
             writer.writerow(
-                room
+                {
+                    "name": room.get("name", ""),
+                    "price": room.get("price", ""),
+                    "rooms_left": room.get(
+                        "rooms_left",
+                        "",
+                    ),
+                }
             )
 
 
 # ============================================================
-# SAVE TEXT
+# COMMAND-LINE INTERFACE
 # ============================================================
 
-def save_text(text):
-
-    with open(
-        TEXT_FILE,
-        "w",
-        encoding="utf-8"
-    ) as file:
-
-        file.write(text)
-
-
-# ============================================================
-# COMMAND LINE VERSION
-# ============================================================
-
-def main():
-
+def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Everest Base Camp "
-            "Room Availability Scraper"
+            "Scrape Everest Base Camp room availability "
+            "from IPMS247."
         )
     )
 
     parser.add_argument(
         "--check-in",
         required=True,
-        help="DD-MM-YYYY"
+        help="Check-in date in DD-MM-YYYY format.",
     )
 
     parser.add_argument(
         "--check-out",
         required=True,
-        help="DD-MM-YYYY"
+        help="Check-out date in DD-MM-YYYY format.",
+    )
+
+    parser.add_argument(
+        "--json",
+        default="availability.json",
+        help="JSON output filename.",
+    )
+
+    parser.add_argument(
+        "--csv",
+        default="availability.csv",
+        help="CSV output filename.",
+    )
+
+    parser.add_argument(
+        "--txt",
+        default="availability.txt",
+        help="Text output filename.",
     )
 
     args = parser.parse_args()
 
-    result = scrape_availability(
-        args.check_in,
-        args.check_out
+    try:
+        result = scrape_availability(
+            check_in=args.check_in,
+            check_out=args.check_out,
+        )
+
+    except ValidationError as exc:
+        print(f"Validation error: {exc}")
+        raise SystemExit(1)
+
+    except UpstreamError as exc:
+        print(f"Booking engine error: {exc}")
+        raise SystemExit(1)
+
+    except Exception as exc:
+        print(f"Unexpected error: {exc}")
+        raise SystemExit(1)
+
+    print(result["availability_text"])
+
+    save_json(
+        result,
+        args.json,
     )
 
-    save_json(result)
-
     save_csv(
-        result["rooms"]
+        result,
+        args.csv,
     )
 
     save_text(
-        result["availability_text"]
+        result,
+        args.txt,
     )
 
     print()
-    print("=" * 70)
-    print("EVEREST BASE CAMP")
-    print("=" * 70)
-
-    print(
-        result["availability_text"]
-    )
-
-    print()
-    print(
-        f"Rooms stored: "
-        f"{len(result['rooms'])}"
-    )
-
-    print("=" * 70)
-
-
-# ============================================================
-# START
-# ============================================================
+    print(f"Saved JSON: {args.json}")
+    print(f"Saved CSV:  {args.csv}")
+    print(f"Saved TXT:  {args.txt}")
 
 if __name__ == "__main__":
     main()
