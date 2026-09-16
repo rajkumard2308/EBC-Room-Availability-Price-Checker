@@ -601,7 +601,7 @@ def format_room_availability(
 
     if "villa" in room_prices:
         # Villa is quoted as a two-room unit.
-        villa_price = room_prices["villa"] * 2
+        villa_price = room_prices["villa"]
 
         lines.append(
             (

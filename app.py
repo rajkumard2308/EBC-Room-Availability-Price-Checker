@@ -42,7 +42,7 @@ st.html(
             font-weight: 800;
             line-height: 1.2;
             color: #172554;
-            margin: 18px 0 6px 0;
+            margin: 45px 0 6px 0;
             padding: 0 10px;
             box-sizing: border-box;
         }
