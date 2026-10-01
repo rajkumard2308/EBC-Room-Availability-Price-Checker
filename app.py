@@ -1,16 +1,19 @@
-import streamlit as st
+import json
 from datetime import date, timedelta
+
+import streamlit as st
+import streamlit.components.v1 as components
 
 import main
 
 
 # ============================================================
-# PAGE CONFIGURATION
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
-    page_title="Everest Base Camp | Room Availability",
-    page_icon="🏔️",
+    page_title="EBC Room Availability",
+    page_icon="🏨",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -20,465 +23,614 @@ st.set_page_config(
 # CUSTOM CSS
 # ============================================================
 
-st.html(
+st.markdown(
     """
     <style>
-        .main {
-            padding-top: 0 !important;
-        }
+
+    /* =====================================================
+       MAIN CONTAINER
+       ===================================================== */
+
+    .block-container {
+        max-width: 1200px;
+        padding-top: 3rem;
+        padding-bottom: 2rem;
+    }
+
+    /* =====================================================
+       HEADER
+       ===================================================== */
+
+    .app-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin: 0 0 4px 0;
+    }
+
+    .app-icon {
+        font-size: 42px;
+        line-height: 1;
+    }
+
+    .app-title {
+        font-size: 42px;
+        font-weight: 750;
+        letter-spacing: -1px;
+        line-height: 1.15;
+    }
+
+    .app-subtitle {
+        font-size: 22px;
+        font-weight: 600;
+        margin-top: 8px;
+        margin-bottom: 28px;
+    }
+
+    /* =====================================================
+       DATE INPUT
+       ===================================================== */
+
+    div[data-testid="stDateInput"] label {
+        font-weight: 600 !important;
+        font-size: 15px !important;
+    }
+
+    div[data-testid="stDateInput"] input {
+        border-radius: 9px !important;
+        min-height: 45px !important;
+    }
+
+    /* =====================================================
+       BUTTON
+       ===================================================== */
+
+    div.stButton > button {
+        width: 100%;
+        min-height: 48px;
+        border-radius: 9px;
+        font-size: 16px;
+        font-weight: 600;
+        transition: all 0.2s ease;
+    }
+
+    div.stButton > button:hover {
+        transform: translateY(-1px);
+    }
+
+    /* =====================================================
+       SUCCESS MESSAGE
+       ===================================================== */
+
+    div[data-testid="stAlert"] {
+        border-radius: 9px !important;
+        margin-top: 10px;
+        margin-bottom: 26px;
+    }
+
+    /* =====================================================
+       SECTION TITLE
+       ===================================================== */
+
+    .section-title {
+        font-size: 30px;
+        font-weight: 750;
+        letter-spacing: -0.5px;
+        margin: 0 0 14px 0;
+        padding: 0;
+    }
+
+    /* =====================================================
+       SUMMARY INTRO
+       ===================================================== */
+
+    .summary-intro {
+        font-size: 16px;
+        font-weight: 600;
+        line-height: 1.5;
+        margin: 0 0 10px 0;
+        padding: 0;
+    }
+
+    /* =====================================================
+       SUMMARY CONTAINER
+       ===================================================== */
+
+    .summary-box {
+        border: none;
+        padding: 0;
+        margin: 0 0 12px 0;
+        background: transparent;
+    }
+
+    /* =====================================================
+       ROOM LINES
+       ===================================================== */
+
+    .room-line {
+        font-size: 16px;
+        line-height: 1.5;
+        padding: 0;
+        margin: 0;
+        border: none;
+    }
+
+    .room-line + .room-line {
+        margin-top: 0;
+    }
+
+    /* =====================================================
+       COPY BUTTON AREA
+       ===================================================== */
+
+    .copy-wrapper {
+        margin-top: 14px;
+        margin-bottom: 10px;
+    }
+
+    /* =====================================================
+       MOBILE
+       ===================================================== */
+
+    @media (max-width: 768px) {
 
         .block-container {
-            max-width: 1100px;
-            padding-top: 1.25rem !important;
-            padding-bottom: 2rem !important;
-            padding-left: 1.25rem !important;
-            padding-right: 1.25rem !important;
+            padding-left: 1rem;
+            padding-right: 1rem;
+            padding-top: 1.5rem;
         }
 
-        .main-title {
-            width: 100%;
-            text-align: center;
-            font-size: clamp(28px, 5vw, 42px);
-            font-weight: 800;
-            line-height: 1.2;
-            color: #172554;
-            margin: 45px 0 6px 0;
-            padding: 0 10px;
-            box-sizing: border-box;
-        }
-
-        .main-description {
-            width: 100%;
-            text-align: center;
-            color: #64748b;
-            font-size: 15px;
-            line-height: 1.5;
-            margin: 0 0 18px 0;
-        }
-
-        .date-title {
-            text-align: center;
-            font-size: 27px;
-            font-weight: 750;
-            color: #172554;
-            line-height: 1.3;
-            margin: 4px 0 3px 0;
-        }
-
-        .date-description {
-            text-align: center;
-            font-size: 14px;
-            color: #64748b;
-            line-height: 1.5;
-            margin: 0 0 14px 0;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 30px 15px 35px 15px;
-            color: #64748b;
-        }
-
-        .empty-state-icon {
-            font-size: 42px;
-            line-height: 1.2;
-            margin-bottom: 8px;
-        }
-
-        .empty-state-title {
-            font-size: 22px;
-            font-weight: 700;
-            color: #334155;
-            line-height: 1.3;
-        }
-
-        .empty-state-description {
-            font-size: 14px;
-            margin-top: 7px;
-            line-height: 1.5;
-        }
-
-        .pricing-note {
-            text-align: center;
-            color: #64748b;
-            font-size: 13px;
-            line-height: 1.5;
-            margin: 8px 0 20px 0;
-        }
-
-        .availability-title {
+        .app-title {
             font-size: 30px;
-            font-weight: 750;
-            color: #172554;
-            line-height: 1.3;
-            margin: 20px 0 10px 0;
         }
 
-        .footer {
-            text-align: center;
-            color: #94a3b8;
-            font-size: 13px;
-            line-height: 1.6;
-            padding: 12px 8px;
-            margin-top: 18px;
+        .app-icon {
+            font-size: 32px;
         }
 
-        div[data-testid="stDateInput"] label {
-            color: #334155 !important;
-            font-weight: 600 !important;
+        .app-subtitle {
+            font-size: 19px;
         }
 
-        div[data-testid="stDateInput"] input {
-            border-radius: 10px !important;
+        .section-title {
+            font-size: 25px;
         }
 
-        div.stButton > button {
-            min-height: 46px;
-            border-radius: 10px;
+        .summary-intro {
             font-size: 15px;
-            font-weight: 650;
         }
 
-        pre {
-            white-space: pre-wrap !important;
-            overflow-wrap: anywhere !important;
-            word-break: break-word !important;
+        .room-line {
+            font-size: 15px;
         }
+    }
 
-        #MainMenu {
-            visibility: hidden;
-        }
-
-        footer {
-            visibility: hidden;
-        }
-
-        @media (max-width: 768px) {
-            .block-container {
-                max-width: 100%;
-                padding-top: 0.75rem !important;
-                padding-left: 0.85rem !important;
-                padding-right: 0.85rem !important;
-                padding-bottom: 1.5rem !important;
-            }
-
-            .main-title {
-                font-size: 30px;
-                line-height: 1.25;
-                margin-top: 28px;
-                margin-bottom: 6px;
-            }
-
-            .main-description {
-                font-size: 13px;
-                margin-bottom: 12px;
-            }
-
-            .date-title {
-                font-size: 23px;
-                margin-top: 2px;
-                margin-bottom: 3px;
-            }
-
-            .date-description {
-                font-size: 13px;
-                margin-bottom: 10px;
-            }
-
-            .availability-title {
-                font-size: 25px;
-                margin-top: 18px;
-            }
-
-            .pricing-note {
-                font-size: 12px;
-                margin-top: 7px;
-                margin-bottom: 15px;
-            }
-
-            div.stButton > button {
-                min-height: 46px;
-                font-size: 14px;
-            }
-
-            pre {
-                font-size: 12px !important;
-                line-height: 1.55 !important;
-            }
-
-            .footer {
-                font-size: 12px;
-            }
-        }
-
-        @media (max-width: 420px) {
-            .main-title {
-                font-size: 24px;
-                line-height: 1.25;
-            }
-
-            .date-title {
-                font-size: 21px;
-            }
-
-            .block-container {
-                padding-left: 0.7rem !important;
-                padding-right: 0.7rem !important;
-            }
-        }
     </style>
-    """
+    """,
+    unsafe_allow_html=True,
 )
-
-
-# ============================================================
-# SESSION STATE
-# ============================================================
-
-today = date.today()
-
-if "check_in_date" not in st.session_state:
-    st.session_state.check_in_date = today + timedelta(days=1)
-
-if "check_out_date" not in st.session_state:
-    st.session_state.check_out_date = (
-        st.session_state.check_in_date + timedelta(days=1)
-    )
-
-if "result" not in st.session_state:
-    st.session_state.result = None
-
-if "error" not in st.session_state:
-    st.session_state.error = None
-
-
-def update_checkout_date():
-    """
-    Automatically set checkout to one day after check-in.
-    """
-    st.session_state.check_out_date = (
-        st.session_state.check_in_date + timedelta(days=1)
-    )
 
 
 # ============================================================
 # HEADER
 # ============================================================
 
-st.html(
+st.markdown(
     """
-    <div class="main-title">
-        🏔️ Everest Base Camp
+    <div class="app-header">
+        <div class="app-icon">🏨</div>
+        <div class="app-title">Everest Base Camp</div>
     </div>
 
-    <div class="main-description">
-        Room Availability &amp; Price Checker
+    <div class="app-subtitle">
+        Room Availability & Price Checker
     </div>
-    """
+    """,
+    unsafe_allow_html=True,
 )
-
-st.divider()
 
 
 # ============================================================
-# DATE SELECTION
+# DATE INPUTS
 # ============================================================
 
-st.html(
-    """
-    <div class="date-title">
-        📅 Select Stay Dates
-    </div>
-
-    <div class="date-description">
-        Select your check-in and check-out dates to check live room availability.
-    </div>
-    """
+col1, col2 = st.columns(
+    2,
+    gap="large"
 )
 
-date_col1, date_col2 = st.columns(2, gap="medium")
 
-with date_col1:
-    check_in_date = st.date_input(
-        "Check-in",
-        min_value=today,
-        format="DD-MM-YYYY",
+with col1:
+
+    check_in = st.date_input(
+        "Check-in Date",
+        value=date.today(),
+        min_value=date.today(),
         key="check_in_date",
-        on_change=update_checkout_date,
     )
 
-check_out_min = check_in_date + timedelta(days=1)
 
-if st.session_state.check_out_date <= check_in_date:
-    st.session_state.check_out_date = check_out_min
+with col2:
 
-with date_col2:
-    check_out_date = st.date_input(
-        "Check-out",
-        min_value=check_out_min,
-        format="DD-MM-YYYY",
+    default_check_out = (
+        check_in + timedelta(days=1)
+    )
+
+    check_out = st.date_input(
+        "Check-out Date",
+        value=default_check_out,
+        min_value=(
+            check_in + timedelta(days=1)
+        ),
         key="check_out_date",
     )
 
 
 # ============================================================
-# BUTTON
+# CHECK AVAILABILITY BUTTON
 # ============================================================
 
 st.write("")
 
-button_col1, button_col2, button_col3 = st.columns([1, 2, 1])
-
-with button_col2:
-    check_button = st.button(
-        "🔎 Check Availability",
-        type="primary",
-        use_container_width=True,
-    )
-
-st.html(
-    """
-    <div class="pricing-note">
-        Prices are shown per room per night and rounded according to the
-        configured pricing rule.
-    </div>
-    """
+search_clicked = st.button(
+    "🔍  Check Availability",
+    type="primary",
+    use_container_width=True,
 )
 
 
 # ============================================================
-# CHECK AVAILABILITY
+# FETCH AVAILABILITY
 # ============================================================
 
-if check_button:
-    if check_out_date <= check_in_date:
-        st.session_state.result = None
-        st.session_state.error = (
-            "Check-out date must be after the check-in date."
+if search_clicked:
+
+    # --------------------------------------------------------
+    # Validate dates
+    # --------------------------------------------------------
+
+    if check_out <= check_in:
+
+        st.error(
+            "Check-out date must be after "
+            "check-in date."
         )
 
-    else:
-        st.session_state.result = None
-        st.session_state.error = None
+        st.stop()
 
-        check_in = check_in_date.strftime("%d-%m-%Y")
-        check_out = check_out_date.strftime("%d-%m-%Y")
+    # --------------------------------------------------------
+    # API call
+    # --------------------------------------------------------
 
-        with st.status(
-            "Checking live room availability...",
-            expanded=False,
-        ) as status:
+    try:
 
-            try:
-                result = main.scrape_availability(
-                    check_in=check_in,
-                    check_out=check_out,
-                )
+        with st.spinner(
+            "Fetching live room availability..."
+        ):
 
-                st.session_state.result = result
+            result = main.scrape_availability(
+                check_in=check_in,
+                check_out=check_out,
+                adults=2,
+                children=0,
+                rooms=1,
+            )
 
-                status.update(
-                    label="Room availability found.",
-                    state="complete",
-                    expanded=False,
-                )
+        # Save result
+        st.session_state[
+            "availability_result"
+        ] = result
 
-            except Exception as error:
-                st.session_state.result = None
-                st.session_state.error = (
-                    f"Unable to fetch room availability: {error}"
-                )
+    except Exception as exc:
 
-                status.update(
-                    label="Unable to fetch room availability.",
-                    state="error",
-                    expanded=False,
-                )
+        st.error(
+            "Unable to fetch room availability."
+        )
 
+        with st.expander(
+            "Show technical error"
+        ):
 
-# ============================================================
-# ERROR MESSAGE
-# ============================================================
+            st.exception(exc)
 
-if st.session_state.error:
-    st.error(st.session_state.error)
+        st.stop()
 
 
 # ============================================================
-# RESULT DISPLAY
+# GET RESULT
 # ============================================================
 
-result = st.session_state.result
+result = st.session_state.get(
+    "availability_result"
+)
+
+
+# ============================================================
+# DISPLAY RESULT
+# ============================================================
 
 if result:
-    rooms = result.get("rooms", [])
-    availability_text = result.get("availability_text", "")
 
-    result_check_in = result.get("check_in", "")
-    result_check_out = result.get("check_out", "")
+    # ========================================================
+    # SUCCESS
+    # ========================================================
 
     st.success(
-        f"Availability found for {len(rooms)} room type(s)."
+        "Availability fetched successfully!"
     )
 
-    st.info(
-        f"Check-in: {result_check_in} → "
-        f"Check-out: {result_check_out}"
+    # ========================================================
+    # TITLE
+    # ========================================================
+
+    st.markdown(
+        '<div class="section-title">'
+        'Room Availability Summary'
+        '</div>',
+        unsafe_allow_html=True,
     )
 
-    st.html(
-        """
-        <div class="availability-title">
-            Room Availability
-        </div>
-        """
+    # ========================================================
+    # GET SUMMARY
+    # ========================================================
+
+    summary = result.get(
+        "human_summary",
+        ""
     )
 
-    # Display the fetched result as plain text.
-    st.code(
-        availability_text,
-        language=None,
-    )
+    if summary:
 
+        # ----------------------------------------------------
+        # Split lines
+        # ----------------------------------------------------
 
-# ============================================================
-# BEFORE SEARCH MESSAGE
-# ============================================================
+        lines = [
+            line.strip()
+            for line in summary.splitlines()
+            if line.strip()
+        ]
 
-else:
-    if not st.session_state.error:
-        st.html(
-            """
-            <div class="empty-state">
-                <div class="empty-state-icon">
-                    🏕️
+        if lines:
+
+            # ------------------------------------------------
+            # First line = intro
+            # ------------------------------------------------
+
+            intro = lines[0]
+
+            room_lines = lines[1:]
+
+            # ------------------------------------------------
+            # Intro
+            # ------------------------------------------------
+
+            st.markdown(
+                f'<div class="summary-intro">'
+                f'{intro}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+            # ------------------------------------------------
+            # ROOM LINES
+            # ------------------------------------------------
+
+            room_html = ""
+
+            for line in room_lines:
+
+                if not line:
+                    continue
+
+                # Escape HTML
+                safe_line = (
+                    line
+                    .replace(
+                        "&",
+                        "&amp;"
+                    )
+                    .replace(
+                        "<",
+                        "&lt;"
+                    )
+                    .replace(
+                        ">",
+                        "&gt;"
+                    )
+                )
+
+                room_html += (
+                    '<div class="room-line">'
+                    f'{safe_line}'
+                    '</div>'
+                )
+
+            # ------------------------------------------------
+            # Display summary
+            # ------------------------------------------------
+
+            st.markdown(
+                f"""
+                <div class="summary-box">
+                    {room_html}
                 </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-                <div class="empty-state-title">
-                    Check Room Availability
-                </div>
+            # =================================================
+            # COPY BUTTON
+            # =================================================
 
-                <div class="empty-state-description">
-                    Select your stay dates above and click
-                    <strong>Check Availability</strong>.
-                </div>
+            # Copy exactly the customer-ready text.
+            #
+            # There is intentionally NO blank line between
+            # the room entries.
+
+            copy_text = "\n".join(
+                lines
+            )
+
+            copy_text_json = json.dumps(
+                copy_text
+            )
+
+            copy_html = f"""
+            <div class="copy-wrapper">
+
+                <button
+                    id="copyBtn"
+                    onclick="copySummary()"
+                    style="
+                        background:#262730;
+                        color:white;
+                        border:1px solid
+                            rgba(255,255,255,0.25);
+                        border-radius:8px;
+                        padding:10px 18px;
+                        font-size:14px;
+                        font-weight:600;
+                        cursor:pointer;
+                        transition:all 0.2s ease;
+                    "
+                    onmouseover="
+                        this.style.background='#33343d';
+                    "
+                    onmouseout="
+                        this.style.background='#262730';
+                    "
+                >
+                    📋 Copy Summary
+                </button>
+
+                <span
+                    id="copyStatus"
+                    style="
+                        margin-left:10px;
+                        color:#00c853;
+                        font-size:14px;
+                        font-weight:600;
+                    "
+                ></span>
+
             </div>
+
+            <script>
+
+            function copySummary() {{
+
+                const text = {copy_text_json};
+
+                // Modern browser clipboard API
+                if (
+                    navigator.clipboard &&
+                    window.isSecureContext
+                ) {{
+
+                    navigator.clipboard
+                        .writeText(text)
+                        .then(function() {{
+
+                            showCopied();
+
+                        }})
+                        .catch(function() {{
+
+                            fallbackCopy(text);
+
+                        }});
+
+                }} else {{
+
+                    fallbackCopy(text);
+
+                }}
+
+            }}
+
+
+            function fallbackCopy(text) {{
+
+                const textarea =
+                    document.createElement(
+                        "textarea"
+                    );
+
+                textarea.value = text;
+
+                textarea.style.position =
+                    "fixed";
+
+                textarea.style.left =
+                    "-999999px";
+
+                document.body.appendChild(
+                    textarea
+                );
+
+                textarea.focus();
+
+                textarea.select();
+
+                try {{
+
+                    document.execCommand(
+                        "copy"
+                    );
+
+                    showCopied();
+
+                }} catch (error) {{
+
+                    document.getElementById(
+                        "copyStatus"
+                    ).innerText =
+                        "Copy failed";
+
+                }}
+
+                textarea.remove();
+
+            }}
+
+
+            function showCopied() {{
+
+                const status =
+                    document.getElementById(
+                        "copyStatus"
+                    );
+
+                status.innerText =
+                    "✓ Copied";
+
+                setTimeout(function() {{
+
+                    status.innerText = "";
+
+                }}, 2000);
+
+            }}
+
+            </script>
             """
+
+            components.html(
+                copy_html,
+                height=55,
+            )
+
+        else:
+
+            st.warning(
+                "No rooms are available for "
+                "the selected dates."
+            )
+
+    else:
+
+        st.warning(
+            "No rooms are available for "
+            "the selected dates."
         )
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.divider()
-
-st.html(
-    """
-    <div class="footer">
-        Everest Base Camp Room Availability System
-        <br>
-        Prices shown are per room, per night, plus applicable taxes.
-    </div>
-    """
-)
