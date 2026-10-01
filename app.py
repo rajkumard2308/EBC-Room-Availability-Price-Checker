@@ -37,6 +37,7 @@ st.markdown(
         padding-bottom: 2rem;
     }
 
+
     /* =====================================================
        HEADER
        ===================================================== */
@@ -67,6 +68,7 @@ st.markdown(
         margin-bottom: 28px;
     }
 
+
     /* =====================================================
        DATE INPUT
        ===================================================== */
@@ -80,6 +82,7 @@ st.markdown(
         border-radius: 9px !important;
         min-height: 45px !important;
     }
+
 
     /* =====================================================
        BUTTON
@@ -98,6 +101,7 @@ st.markdown(
         transform: translateY(-1px);
     }
 
+
     /* =====================================================
        SUCCESS MESSAGE
        ===================================================== */
@@ -108,17 +112,52 @@ st.markdown(
         margin-bottom: 26px;
     }
 
+
     /* =====================================================
-       SECTION TITLE
+       SUMMARY HEADER
        ===================================================== */
+
+    .summary-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        margin: 0 0 14px 0;
+        padding: 0;
+    }
 
     .section-title {
         font-size: 30px;
         font-weight: 750;
         letter-spacing: -0.5px;
-        margin: 0 0 14px 0;
+        margin: 0;
         padding: 0;
+        line-height: 1.2;
     }
+
+
+    /* =====================================================
+       COPY ICON
+       ===================================================== */
+
+    .copy-icon {
+        width: 38px;
+        height: 38px;
+        border: 1px solid rgba(128, 128, 128, 0.45);
+        border-radius: 7px;
+        background: transparent;
+        font-size: 18px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s ease;
+    }
+
+    .copy-icon:hover {
+        background: rgba(128, 128, 128, 0.15);
+    }
+
 
     /* =====================================================
        SUMMARY INTRO
@@ -132,6 +171,7 @@ st.markdown(
         padding: 0;
     }
 
+
     /* =====================================================
        SUMMARY CONTAINER
        ===================================================== */
@@ -139,9 +179,10 @@ st.markdown(
     .summary-box {
         border: none;
         padding: 0;
-        margin: 0 0 12px 0;
+        margin: 0;
         background: transparent;
     }
+
 
     /* =====================================================
        ROOM LINES
@@ -159,14 +200,6 @@ st.markdown(
         margin-top: 0;
     }
 
-    /* =====================================================
-       COPY BUTTON AREA
-       ===================================================== */
-
-    .copy-wrapper {
-        margin-top: 14px;
-        margin-bottom: 10px;
-    }
 
     /* =====================================================
        MOBILE
@@ -202,6 +235,11 @@ st.markdown(
 
         .room-line {
             font-size: 15px;
+        }
+
+        .copy-icon {
+            width: 36px;
+            height: 36px;
         }
     }
 
@@ -359,16 +397,6 @@ if result:
         "Availability fetched successfully!"
     )
 
-    # ========================================================
-    # TITLE
-    # ========================================================
-
-    st.markdown(
-        '<div class="section-title">'
-        'Room Availability Summary'
-        '</div>',
-        unsafe_allow_html=True,
-    )
 
     # ========================================================
     # GET SUMMARY
@@ -378,6 +406,7 @@ if result:
         "human_summary",
         ""
     )
+
 
     if summary:
 
@@ -391,6 +420,7 @@ if result:
             if line.strip()
         ]
 
+
         if lines:
 
             # ------------------------------------------------
@@ -401,20 +431,240 @@ if result:
 
             room_lines = lines[1:]
 
-            # ------------------------------------------------
-            # Intro
-            # ------------------------------------------------
+
+            # =================================================
+            # COPY TEXT
+            # =================================================
+
+            copy_text = "\n".join(lines)
+
+            copy_text_json = json.dumps(
+                copy_text
+            )
+
+
+            # =================================================
+            # SUMMARY HEADER
+            # =================================================
+
+            header_col, copy_col = st.columns(
+                [0.86, 0.14],
+                gap="small"
+            )
+
+
+            # -------------------------------------------------
+            # Title
+            # -------------------------------------------------
+
+            with header_col:
+
+                st.markdown(
+                    """
+                    <div class="section-title">
+                        Room Availability Summary
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+            # -------------------------------------------------
+            # Copy button
+            # -------------------------------------------------
+
+            with copy_col:
+
+                copy_html = f"""
+                <style>
+                    html, body {{
+                        margin: 0 !important;
+                        padding: 0 !important;
+                        overflow: visible !important;
+                    }}
+
+                    .copy-wrapper {{
+                        width: 100%;
+                        box-sizing: border-box;
+                        height: 42px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: flex-end;
+                    }}
+
+                    .copy-icon {{
+                        min-width: 42px;
+                        height: 38px;
+                        padding: 0 10px;
+                        border: 1px solid rgba(128, 128, 128, 0.45);
+                        border-radius: 7px;
+                        background: transparent;
+                        font-size: 17px;
+                        font-weight: 600;
+                        color: inherit;
+                        cursor: pointer;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        gap: 5px;
+                        white-space: nowrap;
+                        transition: all 0.2s ease;
+                    }}
+
+                    .copy-icon:hover {{
+                        background: rgba(128, 128, 128, 0.15);
+                    }}
+
+                    .copy-icon.copied {{
+                        width: 88px;
+                        min-width: 88px;
+                        box-sizing: border-box;
+                        overflow: hidden;
+                    }}
+
+                    .copy-icon.failed {{
+                        width: 88px;
+                        min-width: 88px;
+                        box-sizing: border-box;
+                        overflow: hidden;
+                    }}
+                </style>
+
+                <div class="copy-wrapper">
+                    <button
+                        id="copyButton"
+                        onclick="copySummary()"
+                        title="Copy Summary"
+                        class="copy-icon"
+                    >📋</button>
+                </div>
+
+                <script>
+                const summaryText = {copy_text_json};
+
+                function copySummary() {{
+
+                    if (
+                        navigator.clipboard &&
+                        window.isSecureContext
+                    ) {{
+
+                        navigator.clipboard
+                            .writeText(summaryText)
+                            .then(function() {{
+                                showCopied();
+                            }})
+                            .catch(function() {{
+                                fallbackCopy(summaryText);
+                            }});
+
+                    }} else {{
+
+                        fallbackCopy(summaryText);
+
+                    }}
+                }}
+
+
+                function fallbackCopy(text) {{
+
+                    const textarea =
+                        document.createElement("textarea");
+
+                    textarea.value = text;
+
+                    textarea.style.position = "fixed";
+                    textarea.style.left = "-999999px";
+                    textarea.style.top = "0";
+                    textarea.style.opacity = "0";
+
+                    document.body.appendChild(textarea);
+
+                    textarea.focus();
+                    textarea.select();
+
+                    let copied = false;
+
+                    try {{
+                        copied =
+                            document.execCommand("copy");
+                    }} catch (error) {{
+                        copied = false;
+                    }}
+
+                    textarea.remove();
+
+                    if (copied) {{
+                        showCopied();
+                    }} else {{
+                        showCopyFailed();
+                    }}
+                }}
+
+
+                function showCopied() {{
+
+                    const button =
+                        document.getElementById("copyButton");
+
+                    button.innerHTML = "✓ Copied";
+                    button.title = "Copied";
+                    button.classList.remove("failed");
+                    button.classList.add("copied");
+
+                    setTimeout(function() {{
+
+                        button.innerHTML = "📋";
+                        button.title = "Copy Summary";
+                        button.classList.remove("copied");
+
+                    }}, 1500);
+                }}
+
+
+                function showCopyFailed() {{
+
+                    const button =
+                        document.getElementById("copyButton");
+
+                    button.innerHTML = "✕ Failed";
+                    button.title = "Copy failed";
+                    button.classList.add("failed");
+
+                    setTimeout(function() {{
+
+                        button.innerHTML = "📋";
+                        button.title = "Copy Summary";
+                        button.classList.remove("failed");
+
+                    }}, 1800);
+                }}
+                </script>
+                """
+
+                components.html(
+                    copy_html,
+                    height=42,
+                )
+
+
+            # =================================================
+            # INTRO
+            # =================================================
 
             st.markdown(
-                f'<div class="summary-intro">'
-                f'{intro}'
-                f'</div>',
+                f"""
+                <div class="summary-intro">
+                    {intro}
+                </div>
+                """,
                 unsafe_allow_html=True,
             )
 
-            # ------------------------------------------------
+
+            # =================================================
             # ROOM LINES
-            # ------------------------------------------------
+            # =================================================
 
             room_html = ""
 
@@ -446,9 +696,10 @@ if result:
                     '</div>'
                 )
 
-            # ------------------------------------------------
-            # Display summary
-            # ------------------------------------------------
+
+            # =================================================
+            # DISPLAY SUMMARY
+            # =================================================
 
             st.markdown(
                 f"""
@@ -459,167 +710,6 @@ if result:
                 unsafe_allow_html=True,
             )
 
-            # =================================================
-            # COPY BUTTON
-            # =================================================
-
-            # Copy exactly the customer-ready text.
-            #
-            # There is intentionally NO blank line between
-            # the room entries.
-
-            copy_text = "\n".join(
-                lines
-            )
-
-            copy_text_json = json.dumps(
-                copy_text
-            )
-
-            copy_html = f"""
-            <div class="copy-wrapper">
-
-                <button
-                    id="copyBtn"
-                    onclick="copySummary()"
-                    style="
-                        background:#262730;
-                        color:white;
-                        border:1px solid
-                            rgba(255,255,255,0.25);
-                        border-radius:8px;
-                        padding:10px 18px;
-                        font-size:14px;
-                        font-weight:600;
-                        cursor:pointer;
-                        transition:all 0.2s ease;
-                    "
-                    onmouseover="
-                        this.style.background='#33343d';
-                    "
-                    onmouseout="
-                        this.style.background='#262730';
-                    "
-                >
-                    📋 Copy Summary
-                </button>
-
-                <span
-                    id="copyStatus"
-                    style="
-                        margin-left:10px;
-                        color:#00c853;
-                        font-size:14px;
-                        font-weight:600;
-                    "
-                ></span>
-
-            </div>
-
-            <script>
-
-            function copySummary() {{
-
-                const text = {copy_text_json};
-
-                // Modern browser clipboard API
-                if (
-                    navigator.clipboard &&
-                    window.isSecureContext
-                ) {{
-
-                    navigator.clipboard
-                        .writeText(text)
-                        .then(function() {{
-
-                            showCopied();
-
-                        }})
-                        .catch(function() {{
-
-                            fallbackCopy(text);
-
-                        }});
-
-                }} else {{
-
-                    fallbackCopy(text);
-
-                }}
-
-            }}
-
-
-            function fallbackCopy(text) {{
-
-                const textarea =
-                    document.createElement(
-                        "textarea"
-                    );
-
-                textarea.value = text;
-
-                textarea.style.position =
-                    "fixed";
-
-                textarea.style.left =
-                    "-999999px";
-
-                document.body.appendChild(
-                    textarea
-                );
-
-                textarea.focus();
-
-                textarea.select();
-
-                try {{
-
-                    document.execCommand(
-                        "copy"
-                    );
-
-                    showCopied();
-
-                }} catch (error) {{
-
-                    document.getElementById(
-                        "copyStatus"
-                    ).innerText =
-                        "Copy failed";
-
-                }}
-
-                textarea.remove();
-
-            }}
-
-
-            function showCopied() {{
-
-                const status =
-                    document.getElementById(
-                        "copyStatus"
-                    );
-
-                status.innerText =
-                    "✓ Copied";
-
-                setTimeout(function() {{
-
-                    status.innerText = "";
-
-                }}, 2000);
-
-            }}
-
-            </script>
-            """
-
-            components.html(
-                copy_html,
-                height=55,
-            )
 
         else:
 
@@ -627,6 +717,7 @@ if result:
                 "No rooms are available for "
                 "the selected dates."
             )
+
 
     else:
 
