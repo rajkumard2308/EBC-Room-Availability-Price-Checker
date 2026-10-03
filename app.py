@@ -272,6 +272,29 @@ st.markdown(
 # DATE INPUTS
 # ============================================================
 
+# Initialize the two date widgets once.
+if "check_in_date" not in st.session_state:
+    st.session_state["check_in_date"] = date.today()
+
+if "check_out_date" not in st.session_state:
+    st.session_state["check_out_date"] = (
+        st.session_state["check_in_date"]
+        + timedelta(days=1)
+    )
+
+
+def sync_check_out_date():
+    """
+    Whenever the user changes check-in, automatically move
+    check-out to the following day.
+    """
+    selected_check_in = st.session_state["check_in_date"]
+
+    st.session_state["check_out_date"] = (
+        selected_check_in + timedelta(days=1)
+    )
+
+
 col1, col2 = st.columns(
     2,
     gap="large"
@@ -282,21 +305,16 @@ with col1:
 
     check_in = st.date_input(
         "Check-in Date",
-        value=date.today(),
         min_value=date.today(),
         key="check_in_date",
+        on_change=sync_check_out_date,
     )
 
 
 with col2:
 
-    default_check_out = (
-        check_in + timedelta(days=1)
-    )
-
     check_out = st.date_input(
         "Check-out Date",
-        value=default_check_out,
         min_value=(
             check_in + timedelta(days=1)
         ),
@@ -361,17 +379,48 @@ if search_clicked:
 
     except Exception as exc:
 
-        st.error(
-            "Unable to fetch room availability."
+        # IPMS247 returns "No Data found" when there are no
+        # rooms available for the selected dates. That is a
+        # normal availability result, not a technical error.
+        error_text = str(exc).strip().lower()
+
+        no_availability_error = (
+            "no data found" in error_text
+            or "nodata" in error_text
         )
 
-        with st.expander(
-            "Show technical error"
-        ):
+        if no_availability_error:
 
-            st.exception(exc)
+            st.session_state[
+                "availability_result"
+            ] = {
+                "check_in": check_in,
+                "check_out": check_out,
+                "nights": (
+                    check_out - check_in
+                ).days,
+                "rooms": [],
+                "availability_text": "",
+                "human_summary": (
+                    f"For {check_in.strftime('%d-%m-%Y')} - "
+                    f"{check_out.strftime('%d-%m-%Y')}, "
+                    "there is no room availability."
+                ),
+            }
 
-        st.stop()
+        else:
+
+            st.error(
+                "Unable to fetch room availability."
+            )
+
+            with st.expander(
+                "Show technical error"
+            ):
+
+                st.exception(exc)
+
+            st.stop()
 
 
 # ============================================================
